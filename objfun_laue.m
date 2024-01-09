@@ -6,13 +6,9 @@
 % To do as user:    Nothing.
 %
 % Note:
-% Copyright (C) 2023 by the authors - All Rights Reserved
 % This program is distributed in the hope that it will be useful,
 % but WITHOUT ANY WARRANTY; without even the implied warranty of
-% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-% GNU General Public License for more details. A copy of the GNU
-% General Public License can be obtained from the
-% Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 function S_MSE= objfun_laue(FVr_temp, S_struct)
@@ -35,6 +31,15 @@ function S_MSE= objfun_laue(FVr_temp, S_struct)
     % strain
     alpha_1 = FVr_temp(2); % 1st strain parameter
     alpha_2 = FVr_temp(8); % 2nd strain parameter
+
+    % all values for strain from the substrate
+    strain_arr_bottom = [10,20,11,12,21,22];
+    % all values for tensile strain from the substrate
+    strain_arr_bottom_ten = [10,11,12];
+    % all values for strain from the cap
+    strain_arr_top = [1,2,11,12,21,22];
+    % all values for tensile strain from the cap
+    strain_arr_top_ten = [1,11,21];
     
     % background
     a     = FVr_temp(3); % 1st background parameter
@@ -84,18 +89,28 @@ function S_MSE= objfun_laue(FVr_temp, S_struct)
             % including roughness
             B(N) = A*exp(-(N-Nlayers)^2/(2*sigma^2));
         
-            % strain
-            if S_struct.strained == 1
-                % change by strain
-                strain{N} = exp(-alpha_1*pos{N})+exp(-alpha_2*pos{N});
-                % changes positions by strain
-                pos{N} = pos{N} - strain{N};
-            elseif S_struct.strained == -1
-                % change by strain
-                strain{N} = exp(-alpha_1*pos{N})+exp(-alpha_2*pos{N});
-                % changes positions by strain
-                pos{N} = pos{N} + strain{N};
+            % same array upside down
+            pos_ud{N} = flip(pos{N},2);
+            
+            % calculate substrate strain
+            if S_struct.strained(1) ~=0
+                strain_bottom{N} = exp(-alpha_1*pos{N});
+                if S_struct.strained(1) == 1
+                    pos{N} = pos{N} - strain_bottom{N};
+                elseif S_struct.strained(1) == -1
+                     pos{N} = pos{N} + strain_bottom{N};
+                end
             end
+            % calculate cap strain
+            if S_struct.strained(2) ~=0
+                strain_top{N} = exp(-alpha_2*pos_ud{N});
+                if S_struct.strained(2) == 1
+                    pos{N} = pos{N} + strain_top{N};
+                elseif S_struct.strained(2) == -1
+                     pos{N} = pos{N} - strain_top{N};
+                end
+            end
+            
         end
         
         % initialization structure factor
@@ -121,17 +136,26 @@ function S_MSE= objfun_laue(FVr_temp, S_struct)
         % start position
         pos = [0 pos];
         
-        % strain
-        if S_struct.strained == 1
-            % change by strain
-            strain = exp(-alpha_1*pos)+exp(-alpha_2*pos);
-            % changes positions by strain
-            pos = pos - strain;
-        elseif S_struct.strained == -1
-            % change by strain
-            strain = exp(-alpha_1*pos)+exp(-alpha_2*pos);
-            % changes positions by strain
-            pos = pos + strain;
+        % same array upside down
+        pos_ud = flip(pos,2);
+        
+        % calculate substrate strain
+        if S_struct.strained(1) ~= 0
+            strain_bottom = exp(-alpha_1*pos);
+            if S_struct.strained(1) == 1
+                pos = pos - strain_bottom;
+            elseif S_struct.strained(1) == -1
+                 pos = pos + strain_bottom;
+            end
+        end
+        % calculate cap strain
+        if S_struct.strained(2) ~= 0
+            strain_top = exp(-alpha_2*pos_ud);
+            if S_struct.strained(2) == 1
+                pos = pos + strain_top;
+            elseif S_struct.strained(2) == -1
+                 pos = pos - strain_top;
+            end
         end
 
         % initialization structure factor
@@ -152,17 +176,26 @@ function S_MSE= objfun_laue(FVr_temp, S_struct)
     % start position
     pos = [0 pos];
     
-    % strain
-    if S_struct.strained == 1
-        % change by strain
-        strain = exp(-alpha_1*pos)+exp(-alpha_2*pos);
-        % changes positions by strain
-        pos = pos - strain;
-    elseif S_struct.strained == -1
-        % change by strain
-        strain = exp(-alpha_1*pos)+exp(-alpha_2*pos);
-        % changes positions by strain
-        pos = pos + strain;
+    % same array upside down
+    pos_ud = flip(pos,2);
+    
+    % calculate substrate strain
+    if S_struct.strained(1) ~= 0
+        strain_bottom = exp(-alpha_1*pos);
+        if S_struct.strained(1) == 1
+            pos = pos - strain_bottom;
+        elseif S_struct.strained(1) == -1
+             pos = pos + strain_bottom;
+        end
+    end
+    % calculate cap strain
+    if S_struct.strained(2) ~= 0
+        strain_top = exp(-alpha_2*pos_ud);
+        if S_struct.strained(2) == 1
+            pos = pos + strain_top;
+        elseif S_struct.strained(2) == -1
+             pos = pos - strain_top;
+        end
     end
     
     %% CALCULATE SCATTERING PROPERTIES

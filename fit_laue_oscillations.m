@@ -8,13 +8,9 @@
 %                   Please fill in all your file names and parameters.
 %
 % Note:
-% Copyright (C) 2023 by the authors - All Rights Reserved
 % This program is distributed in the hope that it will be useful,
 % but WITHOUT ANY WARRANTY; without even the implied warranty of
-% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-% GNU General Public License for more details. A copy of the GNU
-% General Public License can be obtained from the
-% Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 close all;
@@ -25,12 +21,12 @@ clear all;
 %-----------------------------Start: TO DO-----------------------------
 
 % state which samples are supposed to be fitted
-sample = '20191210-F2_10aa001'; % sample name
+sample = 'Example_data_10nmFe'; % sample name
 
 % load data data
 I_unit = 1; % 1: cps, 2: counts
 fileExt = '.txt'; % extension of data files
-path = 'C:\Users\Anna\Box\Anna\Matlab\LaueGUI\'; % path where data is stored
+path = 'C:\Users\Anna\Box\Anna\Matlab\LaueMatlab\'; % path where data is stored
 file = strcat(path, sample, fileExt);
 data = load(file);
 
@@ -43,84 +39,92 @@ density = 2/(2.866^3); % unit cell density in atoms/Å^3
 composition = [100]; % array of atomic percent of elements [x1, x2, ...]
 debye_waller_coeff = -0.3328; % coefficient for debye-waller-factor in ...?
 
-% debye_waller_coeff = DB_prefactor(Z); % in case of layer consisting of a
-% single element and Z being:
-% 3,11,13,14,19,23,24,26,28,29,32,41,42,46,47,73,74,78,79, or 82
+% instrument
+theta_m = 2; % polarisation, 0: unpolarized, x: incident angle of e.g. Göbel mirror, ...
+theta_mPath = 1; % optics on 1: incidence side, -1: detector side
 
-% sample parameters
+% sample diffraction parameters
 thickness = 100; % layer thickness in Ångström
 peak = 64.92; % estimated peak position in 2Theta in degrees
 range = 6; % 2Theta range in degrees around the peak to be included in the fit
-
-% instrument
-theta_m = 2; % polarisation, 0: unpolarized, 2: Göbel mirror, ...
-theta_mPath = 1; % optics on 1: incidence side, -1: detector side, if theta_m = 0 then this does not matter.
-lambda   = 1.5406; % instrument wavelength in Ångströmö
-time = 25; % measuring times per point
-resolution = 0.005; % diffractometer resolution
-amplitude = 0.0014; % amplitude of intensity
-background = 0; % background fitting 0: linear, 1: exponential
-% linear: a*Q+b, polynomial: c*(a+Q).^2+b
-a = 0; % 1st background parameter
-b = 0.1; % 2nd background parameter
-c = 0; % 3rd background parameter, irrelevant if background == 0
-
-% does the layer grow strained?
-strained = 1; % 1: tensile out-of-plane, -1: compressive out-of-plane, 0: no
-
-% does the substrate need to be included?
-substrate = 0; % 1: yes, 0: no
-
-% does roughness need to be included?
-roughness = 1; % 1: yes, 0: no
 
 % create min and max bounds
 Nmax_min_per = 0.80; % minimum percentage [0,1] of sample contributing to coherent scattering
 peak_min = peak*0.9965; % minimum peak position in 2Theta in degrees
 peak_max = peak*1.0035; % maximum peak position in 2Theta in degrees
 
+% does the layer grow strained?
+strained = [0,0]; % [0,0]: no
+% strain from substrate: strained(1) = 1: tensile out-of-plane, -1: compressive out-of-plane, 0: no strain
+% strain from capping: strained2) = 1: tensile out-of-plane, -1: compressive out-of-plane, 0: no strain
+
+% does the substrate need to be included?
+substrate = 0; % 1: yes, 0: no
+
+% does roughness need to be included?
+roughness = 0; % 1: yes, 0: no
+
+% measurement parameters
+lambda   = 1.5406; % instrument wavelength in Ångströmö
+time = 25; % measuring times per point
+
+resolution = 0.005; % diffractometer resolution
+amplitude = 0.0069; % scale factor of intensity
+background = 0; % background fitting 0: linear, 1: exponential
+% linear: a*Q+b, polynomial: c*(a+Q).^2+b
+a = 0; % 1st background parameter
+b = 0.1; % 2nd background parameter
+c = 0; % 3rd background parameter, irrelevant if background == 0
+
 % create min and max bounds
 resolution_min = resolution/20;
 resolution_max = resolution*5;
 amplitude_min = 1e-3;
-amplitude_max = 0.006;
+amplitude_max = 0.05;
 a_min = 0;
 a_max = 1.0;
 b_min = 0;
-b_max = 1;
+b_max = 3;
 c_min = 0; % irrelevant if background == 0
 c_max = 0; % irrelevant if background == 0
 
-% if strain, scattering from the substrate, or layer roughness should be 
+% if strain, scattering from the substrate/cap, or layer roughness should be 
 % included, please edit the next lines. Otherwise they are automatically put
 % to 0.
 
-if strained ~= 0
-    % including strain in the fitting
-    alpha_1 = 0.003; % 1st strain parameter
-    alpha_2 = 0.01; % 2nd strain parameter
+if strained(1) ~= 0
+    % including strain in the fitting from the substrate
+    alpha_1 = 0.03; % 1st strain parameter: substrate
 
     % create min and max bounds
     alpha_1_min = -0.2;
-    alpha_1_max = 0.1;
+    alpha_1_max = 0.2;
+
+end
+
+if strained(2) ~= 0
+    % including strain in the fitting from the cap
+    alpha_2 = 0.03; % 2nd strain parameter: cap
+
+    % create min and max bounds
     alpha_2_min = -0.2;
-    alpha_2_max = 0.1;
+    alpha_2_max = 0.2;
 end
 
 if substrate == 1
     % the substrate peak is modeled with a lorentzian profile
     I_lor    = 51; % intensity substrate peak
     w_lor    = 0.004; % width substrate peak
-    peak_lor = 29.955; % substrate peak position in 2Theta
-    x0_lor   = 4*pi*sin(sin((peak_lor/2)/180*pi))/lambda; % substrate peak position in Q
+    peak_lor = 29.955; % substrate peak position in 2Theta in Ångström
+    x0_lor   = lambda/(2*sin((peak_lor/2)/180*pi)); % d spacing for hkl peak in Ångström
 
     % create min and max bounds
     I_lor_min  = I_lor*0.9;
     I_lor_max  = I_lor*1.1;
     w_lor_min  = w_lor*0.1;
     w_lor_max  = w_lor*1.05;
-    x0_lor_min = x0_lor * 0.99;
-    x0_lor_max = x0_lor * 1.01;
+    x0_lor_min = x0_lor * 0.999;
+    x0_lor_max = x0_lor * 1.001;
 end
 
 if roughness == 1
@@ -133,14 +137,17 @@ if roughness == 1
 end
 
 %-----------------------------End: TO DO-------------------------------
-
 % no strain?
-if strained == 0
+if strained(1) == 0
     % excluding strain in the fitting
     alpha_1 = 0;
-    alpha_2 = 0;
     alpha_1_min = 0;
     alpha_1_max = 0;
+end
+
+if strained(2) == 0
+    % excluding strain in the fitting
+    alpha_2 = 0;
     alpha_2_min = 0;
     alpha_2_max = 0;
 end
@@ -197,7 +204,7 @@ end
 uY1 = sqrt(Y1*time)/time;
 
 %% FITTING PARAMETERS, MAX AND MIN BOUND
-% [d, alpha_1, bkgLow, bkgHigh, N0, resolution, amplitude, alpha_2, bkgHighc, sigma, Ilorentz, wlorentz, xlorentz]
+% [d, alpha_1, bkgLow, bkgHigh, N0, resolution, scale factor, alpha_2, bkgHighc, sigma, Ilorentz, wlorentz, xlorentz]
 
 % start values
 GKP_bestmem  = [d,      alpha_1,     a,       b,       Nmax,      resolution,        amplitude,      alpha_2,      c,       sigma,      I_lor,      w_lor,      x0_lor];
@@ -220,7 +227,7 @@ FF = Read_form_factor_coefficients(Z,lambda);
 % calculate absorption coefficient
 re = 2.81794*1e-15*1e10; % in Å
 mu = 2*re*density*lambda*imag(f); % in 1/Å
-mu = mu * 1e-10; % in 1/m
+mu = mu * 1e10; % in 1/m
     
 %% FITTING SETTINGS
 Eout = Q;
@@ -293,7 +300,7 @@ S_struct.GUI          = 0; % 1: yes, 0: no
 %% OUTPUT
 
 % p vector contains final parameters
-% [d, alpha_1, a, b, N0, resolution, amplitude, alpha_2, c, sigma, Ilor, wlor, xlor]
+% [d, alpha_1, a, b, N0, resolution, scale factor, alpha_2, c, sigma, Ilor, wlor, xlor]
 
 % sample
 d_fit     = p(1); % d spacing in Ångström
@@ -325,13 +332,28 @@ x = ones(1,round(N0_fit))*d_fit;
 pos = cumsum(x);
 pos = [0 pos];
 
-if strained == 1
-    strain = exp(-alpha_1_fit*pos)+exp(-alpha_2_fit*pos);
-    pos = pos - strain;
-elseif strained == -1
-    strain = exp(-alpha_1_fit*pos)+exp(-alpha_2_fit*pos);
-    pos = pos + strain;
+% same array upside down
+pos_ud = flip(pos,2);
+
+% calculate substrate strain
+if S_struct.strained(1) ~= 0
+    strain_bottom = exp(-alpha_1*pos);
+    if S_struct.strained(1) == 1
+        pos = pos - strain_bottom;
+    elseif S_struct.strained(1) == -1
+         pos = pos + strain_bottom;
+    end
 end
+% calculate cap strain
+if S_struct.strained(2) ~= 0
+    strain_top = exp(-alpha_2*pos_ud);
+    if S_struct.strained(2) == 1
+        pos = pos + strain_top;
+    elseif S_struct.strained(2) == -1
+         pos = pos - strain_top;
+    end
+end
+
 
 dspacings = diff(pos); % array of d spacings for each atom
 dav       = mean(diff(pos)); % average of d spacing over layer thickness
@@ -343,7 +365,7 @@ coherent = N0_fit/Nmax; % how much scatters coherently?
 % save fit parameters
 fileID = fopen(strcat(path, sample,'_LaueFit_parameters','.txt'),'w');
 fprintf(fileID,strcat('Date: ', string(datetime("now")), '\n'));
-fprintf(fileID,'d,    N0,    alpha_1,    alpha_2,    a,    b,    c,    sigma,     resolution,     amplitude,    I,    w,     x,     dav,     N0/N\n');
+fprintf(fileID,'d,    N0,    alpha_1,    alpha_2,    a,    b,    c,    sigma,     resolution,     scale factor,    I,    w,     x,     dav,     N0/N\n');
 fprintf(fileID,'%.7f    %.7f    %.7f    %.7f    %.7f    %.7f    %.7f    %.7f    %.7f    %.7f    %.7f    %.7f    %.7f    %.7f    %.7f', d_fit, N0_fit, alpha_1_fit, alpha_2_fit, a_fit, b_fit, c_fit, sigma_fit, resolution_fit, amplitude_fit, I_lor_fit, w_lor_fit, d_sub_fit, dav, coherent);
 fprintf(fileID,'\n');
 fclose(fileID);
