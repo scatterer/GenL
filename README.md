@@ -16,4 +16,6 @@ Once the program starts, choose the working folder (on mac OS: default is /Appli
 
 Folder kinematic_and_dynamic includes a command line version that can do either kinematic or dynamic diffraction including fitting.
 
+We recommend starting with the kinematic version to get a rough fit and then switching to the dynamic for higher accuracy.
+
 Superlattice can be modeled using the engine without the GUI.

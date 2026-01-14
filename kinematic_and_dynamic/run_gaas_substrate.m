@@ -1,3 +1,5 @@
+clear all;
+addpath('subroutines/')
 % GaAs substrate 
 lambda = 1.54056;
 theta  = (0:0.01:90)';

@@ -1,5 +1,6 @@
 close all;
 clear all;
+addpath('subroutines/')
 
 % ----- DATA -----
 
@@ -32,20 +33,6 @@ end
 uY = sqrt(Y*time)/time;
 
 Y0 = Y;
-
-% Add a footprint correction to the data
-doFootPrint = 0;
-if doFootPrint
-    F = 0.5./(10*sind(X/2));
-    F(sind(X/2)>(0.5/10)) = 1;
-    Y  = Y.*F;
-    uY = uY.*F;
-    
-    m = max(Y);
-end
-
-Y  = Y/m;
-uY = uY/m;
 
 % ----- SAMPLE -----
 
@@ -94,7 +81,6 @@ control.maxQ0           = 30;        % Max Q value for sampling of the form fact
 control.stepQ0          = 0.1;       % Step size of the Q value for sampling of the form factor for density conversion
 control.pol             = 2;         % 0 - sigma polarization, 1 - pi polarization, 2 - unpolarized
 control.model           = 'density'; % kinematic, darwin, density 
-control.dotransmission  = false;     % Calculate the transmitted intensity through the stack (beta)
 control.plot_density    = false;
 
 % strain from substrate: strained(1) = 1: tensile out-of-plane, -1: compressive out-of-plane, 0: no strain
