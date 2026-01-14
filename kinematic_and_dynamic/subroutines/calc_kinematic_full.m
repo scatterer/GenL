@@ -1,3 +1,14 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Author:           Gunnar Palsson
+% Description:      calculate kinematic approximation
+%
+% To do as user:    Nothing.
+%
+% Note:
+% This program is distributed in the hope that it will be useful,
+% but WITHOUT ANY WARRANTY; without even the implied warranty of
+% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 function [output,stack] = calc_kinematic_full(Q,lambda,stack,control,instrument)
   % Assuming the z axis of the unit cell is aligned with Q
   Z = (1:118);
@@ -207,47 +218,3 @@ function [output,stack] = calc_kinematic_full(Q,lambda,stack,control,instrument)
     output.refl = I;
   end
 end
-
-
-
-
-
-
-% Code for combining atoms at the same depth
-%  [z_s,sorted_idx] = sort(z_s);
-% f = f(:,sorted_idx);
-% f0 = f(:,sorted_idx);
-% k = 1;
-% idx = [];
-% tally = ones(size(z_s));
-% for l = 1:length(z_s)
-%   curz = z_s(l);
-%
-%   for ll = l+1:length(z_s)
-%     if z_s(ll) == curz
-%       f(:,l)  = f(:,l) + f(:,ll);
-%       f0(:,l) = f0(:,l) + f0(:,ll);
-%       idx(end+1) = l;
-%       tally(l) = tally(l) + 1;
-%     end
-%   end
-% end
-% z_s = unique(z_s);
-% if isempty(idx)
-%   idx = 1:length(z_s);
-%   tally = 1;
-% end
-% f = f(:,idx);
-% f0 = f0(:,idx);
-%
-% pos_vector = [];
-% ll = 1;
-% for l = 1:N
-%   for s = 1:length(z_s)
-%     pos_vector(ll) = z_s(s) + lat_par*(l-1);
-%     ff(:,ll)       = f(:,s);
-%     ff0(:,ll)      = f0(:,s);
-%     ll             = ll + 1;
-%   end
-% end
-%

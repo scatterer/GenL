@@ -18,4 +18,7 @@ Folder kinematic_and_dynamic includes a command line version that can do either 
 
 We recommend starting with the kinematic version to get a rough fit and then switching to the dynamic for higher accuracy.
 
+- Run and or modify run_gaas_substrate.m to simulate a pattern
+- Run and or modify fit_laue_oscillations_fe to fit diffraction using either kinematic or dynamic model
+
 Superlattice can be modeled using the engine without the GUI.

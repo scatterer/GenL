@@ -1,3 +1,14 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Author:           Gunnar Palsson
+% Description:      propagate the matrix.
+%
+% To do as user:    Nothing.
+%
+% Note:
+% This program is distributed in the hope that it will be useful,
+% but WITHOUT ANY WARRANTY; without even the implied warranty of
+% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 function refl = propagate_vectorized_chunks(Q,lambda,rho_0r,rho_1r,N,rho_restr,dz,sigma,pol)
 
   m = length(Q);
@@ -163,77 +174,6 @@ function [A1,A2,A3,A4] = make_A_matrix_vec(Q,lambda,rho_e,dz,sigma,pol)
       A4 = invtm_pi;
     end
 end
-
-
-% function [A1, A2, A3, A4] = make_A_matrix_vec(Q, lambda, rho_e, dz, sigma, pol)
-%     % Constants
-%     re = 2.814042735053330e-05;  % Classical electron radius
-%     k0 = 2 * pi / lambda;        % Wave number
-% 
-%     % Precompute constants
-%     factor = 8 * k0^2 * lambda^2 / (2 * pi);
-%     sld = rho_e' * re / (2 * pi);  % Scattering length density (row vector, 1 x nn)
-%     Delta = factor * real(sld);    % Real part of delta * 8 * k0^2
-%     Beta = 1i * factor * imag(sld); % Imaginary part of beta * 8 * k0^2
-% 
-%     % Dimensions
-%     nn = length(rho_e); % Number of layers
-%     m = length(Q);      % Number of Q points
-% 
-%     % Precompute Q squared
-%     Qsqr = (Q(:)').^2; % Row vector (1 x m)
-% 
-%     % Compute kz_all and kz_shifted (transpose retained)
-%     kz_all = sqrt(Qsqr - Delta.' + Beta.'); % (nn x m) after implicit broadcasting
-%     kz_all = kz_all.';                      % Transpose to match original (m x nn)
-%     kz_shifted = circshift(kz_all, 1, 2);   % Circular shift across rows (m x nn)
-% 
-%     % Exponential term
-%     exp_pos = exp(kz_all * (1i * dz / 2));  % (m x nn)
-% 
-%     % Polarization-dependent calculations
-%     if pol == 0
-%         % Sigma polarization
-%         denom = 1 ./ (kz_shifted + kz_all); % (m x nn)
-%         r = (kz_shifted - kz_all) .* denom; % Reflection coefficient (m x nn)
-%         t = 2 * kz_shifted .* denom;        % Transmission coefficient (m x nn)
-% 
-%         % A matrices for sigma polarization
-%         invtp = exp_pos ./ t;
-%         invtm = 1 ./ (t .* exp_pos);
-%         A1 = invtp;
-%         A2 = invtm .* r;
-%         A3 = invtp .* r;
-%         A4 = invtm;
-% 
-%     elseif pol == 1
-%         % Pi polarization
-%         deltan = lambda^2 * real(sld) / (2 * pi); % Delta (1 x nn)
-%         betan = 1i * lambda^2 / (2 * pi) * imag(sld); % Beta (1 x nn)
-% 
-%         % Refractive indices (transpose to match original)
-%         n = 1 - deltan - betan;           % Refractive index (1 x nn)
-%         n_shifted = circshift(n, 1, 2);   % Shifted refractive index (1 x nn)
-% 
-%         % Compute factors for pi polarization
-%         fact1 = n_shifted.^2 .* kz_all; % (m x nn)
-%         fact2 = n.^2 .* kz_shifted;     % (m x nn)
-%         denom = fact1 + fact2;          % (m x nn)
-%         r_pi = (fact1 - fact2) ./ denom; % Reflection coefficient (m x nn)
-%         t_pi = 2 * fact1 ./ denom;      % Transmission coefficient (m x nn)
-% 
-%         % A matrices for pi polarization
-%         invtp_pi = exp_pos ./ t_pi;
-%         invtm_pi = 1 ./ (t_pi .* exp_pos);
-%         A1 = invtp_pi;
-%         A2 = r_pi .* invtm_pi;
-%         A3 = r_pi .* invtp_pi;
-%         A4 = invtm_pi;
-%     end
-% end
-
-
-
 
 
 function B = do_matrix_propagation_optimzed_vec_winograd(A1,A2,A3,A4) %,z)
