@@ -63,8 +63,8 @@ layer.filename      = 'Fe_fractional.vasp';
 layer.dinterface    = [1.4, 1.3, 1.43];
 layer.scale         = [1.04, 0.9, 1.06];
 layer.area_scale    = [1.1927, 0.5, 1.5];
-layer.roughness     = false;
-layer.sigma         = 0;        % RMS roughness value
+layer.roughness     = true;
+layer.sigma         = [2, 0,5];        % RMS roughness value
 layer.bottom_strain_amplitude = [0.2, 0.004, 0.4];
 layer.bottom_strain_end       = [5, 2, 20]; % Stop straining after bottom_strain_end number of atoms (not u.c.)
 layer.top_strain_amplitude    = 0;
@@ -81,7 +81,7 @@ control.maxQ0           = 30;        % Max Q value for sampling of the form fact
 control.stepQ0          = 0.1;       % Step size of the Q value for sampling of the form factor for density conversion
 control.pol             = 2;         % 0 - sigma polarization, 1 - pi polarization, 2 - unpolarized
 control.model           = 'density'; % kinematic, darwin, density 
-control.plot_density    = false;
+control.plot_density    = true;
 
 % strain from substrate: strained(1) = 1: tensile out-of-plane, -1: compressive out-of-plane, 0: no strain
 

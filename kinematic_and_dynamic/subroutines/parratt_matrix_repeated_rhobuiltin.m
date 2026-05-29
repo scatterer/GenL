@@ -165,6 +165,7 @@ else
  end
  tic
 disp('Generating density...')
+rho_e_rough = [];
 for o = 1:length(stack)
     N = round(stack{o}.N);
     if o == 1 % substrate
@@ -269,7 +270,12 @@ toc
 if ~full_stack 
   rho_0r = rho_0(end:-1:1);
   rho_1r = rho_1(end:-1:1);
-  rho_rest = rho_e(vacuum_slices+start_idx*2:end);
+
+  if isempty(rho_e_rough)
+    rho_rest = rho_e(vacuum_slices+start_idx*2:end);
+  else
+    rho_rest = rho_e_rough{end}(vacuum_slices+start_idx*2:end);
+  end
   
   if control.plot_density
     figure(2)
@@ -281,6 +287,7 @@ if ~full_stack
     z_rest   = z(vacuum_slices+start_idx*2:end);
 
     plot(z_rest,real(rho_rest),'-m');
+    drawnow;
   end
   disp('Propagating...')
   tic

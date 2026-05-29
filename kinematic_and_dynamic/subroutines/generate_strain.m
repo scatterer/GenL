@@ -40,19 +40,30 @@ function [strained_position,sorted_idx,f_index] = generate_strain(z_s,lat_par,N,
   strained_position(1) = pos_vector(1);
 
   bottom_strain_boundary = round(stack{o}.bottom_strain_end);
+
+  if bottom_strain_boundary > length(pos_vector) % unphysical bottom strain boundary is larger than the layer, park at L so the whole layer is bottom strained.
+    bottom_strain_boundary = length(pos_vector);
+  end
+
   top_strain_boundary    = length(pos_vector)-round(stack{o}.top_strain_end);
 
+  if top_strain_boundary <= 0 % top strain starting point is unphysical, park at L so the whole layer is top strained.
+    top_strain_boundary = length(pos_vector);
+  end
+
   for ll = 2:length(pos_vector)
-    if ll > stack{o}.bottom_strain_end % add no extra strain 
+    if ll > stack{o}.bottom_strain_end % add no extra strain
       displacement(ll) = pos_vector(ll) - pos_vector(ll-1);
     else
       if (pos_vector(ll) - pos_vector(ll-1)) == 0 % if two atoms are at the same coordinate in z
         displacement(ll) = 0;
       else
+        bottom_strain_boundary
+        length(pos_vector)
         displacement(ll) = (pos_vector(ll) - pos_vector(ll-1)) + stack{o}.bottom_strain_amplitude*(pos_vector(bottom_strain_boundary) - pos_vector(ll));
       end
     end
-    if ll > length(pos_vector) - stack{o}.top_strain_end
+    if ll > top_strain_boundary
       if (pos_vector(ll) - pos_vector(ll-1)) == 0
         displacement(ll) = 0;
       else
