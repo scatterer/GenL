@@ -24,6 +24,7 @@ from genl import (
 )
 from genl.gui import (
     FitUpdate,
+    KinematicModel,
     SAMPLES,
     _least_squares_residual,
     clipped_checkpoint_population,
@@ -33,6 +34,7 @@ from genl.gui import (
     fit_update_from_dict,
     fit_update_to_dict,
     kinematic_bounds_and_start,
+    kinematic_substrate_peak,
     load_sample_data,
     read_experimental_data,
     save_result_plots,
@@ -290,6 +292,34 @@ class CoreTests(unittest.TestCase):
         np.testing.assert_allclose(reflection.amplitude_s, fused.amplitude_s, rtol=1e-10, atol=1e-13)
         np.testing.assert_allclose(reflection.amplitude_p, fused.amplitude_p, rtol=1e-10, atol=1e-13)
 
+    def test_gaas_low_angle_reflectivity_is_passive(self):
+        angle = 0.69
+        q = 4.0 * np.pi / 1.54056 * np.sin(np.deg2rad(angle))
+        result = calc_dynamic_density(
+            np.array([q]),
+            1.54056,
+            [
+                Layer(
+                    direction=3,
+                    n=1e8,
+                    filename="GaAs_alt_fractional.vasp",
+                    scale=1.001,
+                    area_scale=1.001,
+                )
+            ],
+            control=Control(pol=0, model="density"),
+            instrument=Instrument(theta_m=2),
+            poscar_dir=POSCAR,
+            form_factor_dir=DATA,
+            vacuum_thick=20,
+            slices=400,
+            max_q0=75,
+            step_q0=0.01,
+            propagation_backend="reflection",
+        )
+
+        self.assertLessEqual(result.refl[0], 1.0)
+
     def test_reflection_matches_fused_for_bundled_materials_and_polarizations(self):
         if dynamic._prepare_substrate_reflection_pair_numba is None:
             self.skipTest("numba reflection backend is unavailable")
@@ -542,6 +572,40 @@ class CoreTests(unittest.TestCase):
         np.testing.assert_allclose(dyn_bounds[8], [0.997, 1.007])
         np.testing.assert_allclose(dyn_start[9:13], expected_start)
         np.testing.assert_allclose(dyn_bounds[9:13], expected_bounds)
+
+    def test_kinematic_substrate_peak_is_in_parameter_vector_and_prediction(self):
+        sample = SAMPLES["Fe 10 nm"]
+        center = 65.0
+        d_spacing = 1.5406 / (2.0 * np.sin(np.deg2rad(center / 2.0)))
+        substrate = {
+            "intensity": (25.0, 0.0, 100.0),
+            "width": (0.08, 0.01, 0.2),
+            "d_spacing": (d_spacing, d_spacing * 0.999, d_spacing * 1.001),
+        }
+        bounds, start = kinematic_bounds_and_start(
+            sample,
+            False,
+            False,
+            include_substrate=True,
+            substrate_peak_settings=substrate,
+        )
+        twotheta = np.linspace(64.5, 65.5, 101)
+        observed = np.ones_like(twotheta)
+        with_substrate = KinematicModel(
+            twotheta, observed, sample, include_substrate=True
+        ).predict(start)
+        film_only = KinematicModel(twotheta, observed, sample).predict(start[:6])
+
+        np.testing.assert_allclose(start[6:9], [25.0, 0.08, d_spacing])
+        np.testing.assert_allclose(
+            bounds[6:9],
+            [[0.0, 100.0], [0.01, 0.2], [d_spacing * 0.999, d_spacing * 1.001]],
+        )
+        np.testing.assert_allclose(
+            with_substrate - film_only,
+            kinematic_substrate_peak(twotheta, 25.0, 0.08, d_spacing, 1.5406),
+        )
+        self.assertEqual(int(np.argmax(with_substrate - film_only)), 50)
 
     def test_gui_data_loader_reads_full_file_before_windowing(self):
         twotheta, observed = read_experimental_data(FE_DATA)
