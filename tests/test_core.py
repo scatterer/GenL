@@ -24,6 +24,7 @@ from genl import (
 )
 from genl.gui import (
     FitUpdate,
+    KinematicModel,
     SAMPLES,
     _least_squares_residual,
     clipped_checkpoint_population,
@@ -33,6 +34,7 @@ from genl.gui import (
     fit_update_from_dict,
     fit_update_to_dict,
     kinematic_bounds_and_start,
+    kinematic_substrate_peak,
     load_sample_data,
     read_experimental_data,
     save_result_plots,
@@ -542,6 +544,40 @@ class CoreTests(unittest.TestCase):
         np.testing.assert_allclose(dyn_bounds[8], [0.997, 1.007])
         np.testing.assert_allclose(dyn_start[9:13], expected_start)
         np.testing.assert_allclose(dyn_bounds[9:13], expected_bounds)
+
+    def test_kinematic_substrate_peak_is_in_parameter_vector_and_prediction(self):
+        sample = SAMPLES["Fe 10 nm"]
+        center = 65.0
+        d_spacing = 1.5406 / (2.0 * np.sin(np.deg2rad(center / 2.0)))
+        substrate = {
+            "intensity": (25.0, 0.0, 100.0),
+            "width": (0.08, 0.01, 0.2),
+            "d_spacing": (d_spacing, d_spacing * 0.999, d_spacing * 1.001),
+        }
+        bounds, start = kinematic_bounds_and_start(
+            sample,
+            False,
+            False,
+            include_substrate=True,
+            substrate_peak_settings=substrate,
+        )
+        twotheta = np.linspace(64.5, 65.5, 101)
+        observed = np.ones_like(twotheta)
+        with_substrate = KinematicModel(
+            twotheta, observed, sample, include_substrate=True
+        ).predict(start)
+        film_only = KinematicModel(twotheta, observed, sample).predict(start[:6])
+
+        np.testing.assert_allclose(start[6:9], [25.0, 0.08, d_spacing])
+        np.testing.assert_allclose(
+            bounds[6:9],
+            [[0.0, 100.0], [0.01, 0.2], [d_spacing * 0.999, d_spacing * 1.001]],
+        )
+        np.testing.assert_allclose(
+            with_substrate - film_only,
+            kinematic_substrate_peak(twotheta, 25.0, 0.08, d_spacing, 1.5406),
+        )
+        self.assertEqual(int(np.argmax(with_substrate - film_only)), 50)
 
     def test_gui_data_loader_reads_full_file_before_windowing(self):
         twotheta, observed = read_experimental_data(FE_DATA)

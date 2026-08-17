@@ -225,10 +225,11 @@ logarithmic intensity, bottom `2theta`, and top `Q` axes. `Export graph data...`
 writes the diffraction data, fit, and residual as CSV or tab-delimited
 text, plus a separate `_density` table when an electron-density profile is
 available. Dynamic plot export requires a current dynamic density profile and
-confirms both output paths; kinematic results only provide diffraction. The
-left side keeps the run setup, Run/Stop buttons, status,
-fit summary, and tabbed parameter controls visible while the monitoring plots
-stay fixed on the right. Panels use restrained color accents to identify setup,
+confirms both output paths; kinematic results only provide diffraction. The GUI
+opens at the detected desktop size with the control/plot divider at 40% of the
+screen width. The left side keeps the run setup, Run/Stop buttons, status, fit
+summary, and tabbed parameter controls visible while the monitoring plots stay
+fixed on the right. Panels use restrained color accents to identify setup,
 kinematic, dynamic film, dynamic fit, dynamic substrate, and roughness controls.
 `Simulate`, `Run fit`, `Pause fit`, and `Stop fit` use blue, green, amber, and red button styles,
 and the status line changes color for running, complete, warning, and error
@@ -243,32 +244,41 @@ depending on whether the latest fitted value is comfortably inside, close to,
 or at the selected min/max bounds. Boundary warnings are also added to the fit
 summary.
 
-The GUI can switch between kinematic and dynamic fitting. Model-specific
-controls are enabled according to the selected model:
+The GUI can switch between kinematic and dynamic fitting. Its parameter area
+is grouped into `Kinematic`, `Dynamic`, `Strain / roughness`, and
+`Optimization / simulation` panels. Model-specific controls are enabled
+according to the selected model:
 
-- `Kinematic parameters` tab: plane spacing, coherent planes, resolution,
+- `Kinematic > Film and fit` tab: plane spacing, coherent planes, resolution,
   intensity scale, linear background, and Debye-Waller coefficient.
-- `Dynamic film parameters` tab: dynamic-model film structure file, layer
+- `Kinematic > Substrate` tab: an optional Lorentzian substrate peak matching
+  the MATLAB kinematic model, with integrated intensity, FWHM, and interplanar
+  spacing controls. Each parameter can be fixed or fitted independently.
+- `Dynamic > Film` tab: dynamic-model film structure file, layer
   direction, number of layers, lattice scale, area scale, and interface
   spacing. The structure-file dropdown is populated from all `*.vasp`
   files currently present in `data/structures/`.
-- `Dynamic fit parameters` tab: dynamic-model resolution, intensity scale, and
-  linear background controls, density discretization, plus the `Dynamic
-  backend` selector. `Density slices per cell` defaults to `100`, and `Density
-  Q max` defaults to `30 1/A`; GenL rejects a reciprocal cutoff at or above the
-  real-space grid Nyquist limit. Use `auto` for normal work, `reflection` to
-  require the new Numba reflection recursion, `fused` to require the prior
-  Numba transfer-matrix kernels, and `legacy` to force the previous NumPy
-  density and vectorized propagation implementation.
-- `Dynamic substrate setup` tab: dynamic-model substrate structure file, layer
+- `Dynamic > Calculation and fit` tab: dynamic-model resolution, intensity
+  scale, and linear background controls, density discretization, plus the
+  `Dynamic backend` selector. `Density slices per cell` defaults to `100`, and
+  `Density Q max` defaults to `30 1/A`; GenL rejects a reciprocal cutoff at or
+  above the real-space grid Nyquist limit. Use `auto` for normal work,
+  `reflection` to require the new Numba reflection recursion, `fused` to
+  require the prior Numba transfer-matrix kernels, and `legacy` to force the
+  previous NumPy density and vectorized propagation implementation.
+- `Dynamic > Substrate` tab: dynamic-model substrate structure file, layer
   direction, number of layers, interface spacing, lattice scale, and area scale.
   Lattice scale has `Fit`, `Value`, `Min`, and `Max` controls; it is unchecked by
   default with limits at +/-0.5% of the loaded sample value.
-- `Strain parameters` tab: bottom/top strain amplitudes and affected extents,
-  each with `Fit`, `Value`, `Min`, `Max`, and range controls. Extents are in
-  planes for the kinematic model and atomic positions for the dynamic model.
-- `Roughness parameters` tab: film roughness and substrate/interface roughness
-  value/min/max controls.
+- `Strain / roughness > Strain` tab: bottom/top strain amplitudes and affected
+  extents, each with `Fit`, `Value`, `Min`, `Max`, and range controls. Extents
+  are in planes for the kinematic model and atomic positions for the dynamic
+  model.
+- `Strain / roughness > Roughness` tab: film roughness and
+  substrate/interface roughness value/min/max controls.
+- `Optimization / simulation` panel: random seed, progress update interval, DE
+  iteration and population limits, local maximum evaluations, and polish
+  iterations. These settings apply to both scattering models.
 
 Use `Include strain` to add bottom/top strain amplitude and affected-depth
 parameters to either model. The strain tab retains separate values and limits

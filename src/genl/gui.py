@@ -78,6 +78,20 @@ def twotheta_from_q(q: np.ndarray | float, wavelength: float) -> np.ndarray | fl
     return 2.0 * np.rad2deg(np.arcsin(np.clip(argument, -1.0, 1.0)))
 
 
+def kinematic_substrate_peak(
+    twotheta: np.ndarray,
+    integrated_intensity: float,
+    fwhm: float,
+    d_spacing: float,
+    wavelength: float,
+) -> np.ndarray:
+    center = 2.0 * np.rad2deg(np.arcsin(wavelength / (2.0 * d_spacing)))
+    half_width = 0.5 * fwhm
+    return integrated_intensity / np.pi * half_width / (
+        (np.asarray(twotheta, dtype=float) - center) ** 2 + half_width**2
+    )
+
+
 def _least_squares_residual(residual: np.ndarray) -> np.ndarray:
     """Make least-squares minimize the displayed mean absolute error."""
     residual = np.asarray(residual, dtype=float)
@@ -349,6 +363,7 @@ def fit_resume_signature(
         float(config["twotheta_max"]),
         bool(config["include_strain"]),
         bool(config["include_roughness"]),
+        bool(config.get("include_kinematic_substrate", False)),
         int(config["seed"]),
         int(config["popsize"]),
         tuple(bool(value) for value in fit_mask),
@@ -482,6 +497,7 @@ class KinematicModel:
         observed: np.ndarray,
         sample: SampleConfig,
         debye_waller_coeff: float | None = None,
+        include_substrate: bool = False,
         include_strain: bool = False,
         include_roughness: bool = False,
         wavelength: float = CU_K_ALPHA_WAVELENGTH,
@@ -494,6 +510,7 @@ class KinematicModel:
             if debye_waller_coeff is None
             else debye_waller_coeff
         )
+        self.include_substrate = include_substrate
         self.include_strain = include_strain
         self.include_roughness = include_roughness
         self.wavelength = wavelength
@@ -516,8 +533,15 @@ class KinematicModel:
             * 1e10
         )
 
-    def _parse_optional_params(self, params: np.ndarray) -> tuple[float, float, float, float, float, float]:
+    def _parse_optional_params(
+        self, params: np.ndarray
+    ) -> tuple[float, float, float, float, float, float, float, float, float]:
         offset = 6
+        if self.include_substrate:
+            substrate_intensity, substrate_width, substrate_d = params[offset : offset + 3]
+            offset += 3
+        else:
+            substrate_intensity = substrate_width = substrate_d = 0.0
         if self.include_strain:
             bottom_amp, bottom_end, top_amp, top_end = params[offset : offset + 4]
             offset += 4
@@ -527,7 +551,17 @@ class KinematicModel:
             film_sigma, substrate_sigma = params[offset : offset + 2]
         else:
             film_sigma = substrate_sigma = 0.0
-        return bottom_amp, bottom_end, top_amp, top_end, film_sigma, substrate_sigma
+        return (
+            substrate_intensity,
+            substrate_width,
+            substrate_d,
+            bottom_amp,
+            bottom_end,
+            top_amp,
+            top_end,
+            film_sigma,
+            substrate_sigma,
+        )
 
     def _single_shape(
         self,
@@ -561,9 +595,17 @@ class KinematicModel:
 
     def predict(self, params: np.ndarray) -> np.ndarray:
         d_spacing, n_planes, resolution, amplitude, bkg_a, bkg_b = params[:6]
-        bottom_amp, bottom_end, top_amp, top_end, film_sigma, substrate_sigma = (
-            self._parse_optional_params(params)
-        )
+        (
+            substrate_intensity,
+            substrate_width,
+            substrate_d,
+            bottom_amp,
+            bottom_end,
+            top_amp,
+            top_end,
+            film_sigma,
+            substrate_sigma,
+        ) = self._parse_optional_params(params)
         if film_sigma > 0:
             n_values, weights = roughness_distribution(n_planes, film_sigma)
             shape = np.zeros_like(self.q)
@@ -576,7 +618,16 @@ class KinematicModel:
 
         if substrate_sigma > 0:
             shape = shape * np.exp(-((self.q * substrate_sigma) ** 2))
-        return amplitude * shape + bkg_a * self.q + bkg_b
+        predicted = amplitude * shape + bkg_a * self.q + bkg_b
+        if self.include_substrate:
+            predicted = predicted + kinematic_substrate_peak(
+                self.twotheta,
+                substrate_intensity,
+                substrate_width,
+                substrate_d,
+                self.wavelength,
+            )
+        return predicted
 
     def _residual_for_prediction(self, predicted: np.ndarray) -> np.ndarray:
         floor = max(np.min(self.observed[self.observed > 0]) * 0.1, 1e-12)
@@ -627,6 +678,8 @@ def kinematic_bounds_and_start(
     roughness_settings: dict[str, tuple[float, float, float]] | None = None,
     kinematic_settings: dict[str, tuple[float, float, float]] | None = None,
     strain_settings: dict[str, tuple[float, float, float]] | None = None,
+    include_substrate: bool = False,
+    substrate_peak_settings: dict[str, tuple[float, float, float]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     if kinematic_settings is None:
         wavelength = CU_K_ALPHA_WAVELENGTH
@@ -669,6 +722,17 @@ def kinematic_bounds_and_start(
         [d_spacing[0], planes[0], resolution[0], scale[0], bkg_a[0], bkg_b[0]],
         dtype=float,
     )
+    if include_substrate:
+        settings = substrate_peak_settings or {
+            "intensity": (51.0, 0.0, 1e6),
+            "width": (0.004, 0.0001, 0.05),
+            "d_spacing": (sample.d_spacing, sample.d_spacing * 0.995, sample.d_spacing * 1.005),
+        }
+        substrate_values = [settings[key] for key in ("intensity", "width", "d_spacing")]
+        bounds_array = np.vstack(
+            [bounds_array, [[value[1], value[2]] for value in substrate_values]]
+        )
+        start = np.concatenate([start, [value[0] for value in substrate_values]])
     if include_strain:
         settings = strain_settings or {
             "bottom_amplitude": (0.0, -0.2, 0.2),
@@ -811,6 +875,7 @@ def optional_param_summary(
     base_len: int,
     include_strain: bool,
     include_roughness: bool,
+    film_unit: str,
 ) -> str:
     offset = base_len
     text = ""
@@ -821,7 +886,6 @@ def optional_param_summary(
         )
         offset += 4
     if include_roughness:
-        film_unit = "planes" if base_len == 6 else "layers"
         text += (
             f"film roughness sigma: {params[offset]:.6g} {film_unit}\n"
             f"substrate/interface roughness sigma: {params[offset + 1]:.6g} A\n"
@@ -837,10 +901,20 @@ def summarize_fit(
     rmse: float,
     include_strain: bool,
     include_roughness: bool,
+    include_kinematic_substrate: bool = False,
     film_settings: dict[str, object] | None = None,
     substrate_settings: dict[str, object] | None = None,
 ) -> str:
     if model_name == "Kinematic":
+        offset = 6
+        substrate_text = ""
+        if include_kinematic_substrate:
+            substrate_text = (
+                f"substrate integrated intensity: {params[offset]:.6e}\n"
+                f"substrate FWHM: {params[offset + 1]:.6e} deg\n"
+                f"substrate d spacing: {params[offset + 2]:.6f} A\n"
+            )
+            offset += 3
         return (
             f"{sample.name} kinematic fit\n"
             f"d spacing: {params[0]:.6f} A\n"
@@ -849,7 +923,8 @@ def summarize_fit(
             f"resolution FWHM Q: {params[2]:.6e} 1/A\n"
             f"scale: {params[3]:.6e}\n"
             f"background: {params[4]:.6e} * Q + {params[5]:.6e}\n"
-            + optional_param_summary(params, 6, include_strain, include_roughness)
+            + substrate_text
+            + optional_param_summary(params, offset, include_strain, include_roughness, "planes")
             + f"mean abs log10 error: {cost:.6e}\n"
             f"RMSE: {rmse:.6e} cps"
         )
@@ -882,7 +957,7 @@ def summarize_fit(
         f"scale: {params[5]:.6e}\n"
         f"background: {params[6]:.6e} * Q + {params[7]:.6e}\n"
         + f"substrate lattice scale: {params[8]:.8f}\n"
-        + optional_param_summary(params, 9, include_strain, include_roughness)
+        + optional_param_summary(params, 9, include_strain, include_roughness, "layers")
         + f"mean abs log10 error: {cost:.6e}\n"
         f"RMSE: {rmse:.6e} cps"
     )
@@ -958,6 +1033,22 @@ class FitApp:
         self.kin_scale_fit_enabled_var = tk.BooleanVar(value=True)
         self.kin_bkg_a_fit_enabled_var = tk.BooleanVar(value=True)
         self.kin_bkg_b_fit_enabled_var = tk.BooleanVar(value=True)
+        self.kin_substrate_var = tk.BooleanVar(value=False)
+        self.kin_substrate_intensity_start_var = tk.StringVar(value="51.0")
+        self.kin_substrate_intensity_min_var = tk.StringVar(value="0.0")
+        self.kin_substrate_intensity_max_var = tk.StringVar(value="1000000.0")
+        self.kin_substrate_width_start_var = tk.StringVar(value="0.004")
+        self.kin_substrate_width_min_var = tk.StringVar(value="0.0001")
+        self.kin_substrate_width_max_var = tk.StringVar(value="0.05")
+        self.kin_substrate_d_start_var = tk.StringVar(value="")
+        self.kin_substrate_d_min_var = tk.StringVar(value="")
+        self.kin_substrate_d_max_var = tk.StringVar(value="")
+        self.kin_substrate_intensity_fit_var = tk.StringVar(value="")
+        self.kin_substrate_width_fit_var = tk.StringVar(value="")
+        self.kin_substrate_d_fit_var = tk.StringVar(value="")
+        self.kin_substrate_intensity_fit_enabled_var = tk.BooleanVar(value=True)
+        self.kin_substrate_width_fit_enabled_var = tk.BooleanVar(value=True)
+        self.kin_substrate_d_fit_enabled_var = tk.BooleanVar(value=True)
         self.film_filename_var = tk.StringVar(value=SAMPLES["Fe 10 nm"].film_filename)
         self.film_direction_var = tk.StringVar(value=str(SAMPLES["Fe 10 nm"].dynamic_direction))
         self.film_n_start_var = tk.StringVar(value="")
@@ -1048,6 +1139,7 @@ class FitApp:
         self.top_extent_label_var = tk.StringVar(value="Top extent (atomic positions)")
         self.status_var = tk.StringVar(value="Ready")
         self.kinematic_widgets: list[tk.Widget] = []
+        self.kinematic_substrate_widgets: list[tk.Widget] = []
         self.dynamic_widgets: list[tk.Widget] = []
         self.strain_widgets: list[tk.Widget] = []
         self.range_indicators: list[RangeIndicator] = []
@@ -1065,6 +1157,7 @@ class FitApp:
         self.data_path_var.trace_add("write", self._on_data_path_changed)
         self.model_var.trace_add("write", self._on_model_changed)
         self.strain_var.trace_add("write", self._on_strain_changed)
+        self.kin_substrate_var.trace_add("write", self._on_kinematic_substrate_changed)
         self.root.after(0, self._draw_experimental_preview)
         self.root.after(150, self._process_queue)
 
@@ -1131,7 +1224,9 @@ class FitApp:
         self.status_label.configure(style=style)
 
     def _build_layout(self) -> None:
-        self.root.geometry("1400x850")
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        self.root.geometry(f"{screen_width}x{screen_height}+0+0")
         self.root.minsize(1180, 720)
 
         main_pane = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
@@ -1178,12 +1273,6 @@ class FitApp:
         run_controls = [
             (self.min_label_var, self.min_var, 3, 0),
             (self.max_label_var, self.max_var, 3, 2),
-            ("Seed", self.seed_var, 4, 0),
-            ("Progress update interval", self.interval_var, 4, 2),
-            ("DE max iterations", self.maxiter_var, 5, 0),
-            ("DE population size", self.popsize_var, 5, 2),
-            ("Local max evaluations", self.local_var, 6, 0),
-            ("Polish iterations", self.polish_var, 6, 2),
         ]
         for label, var, row, column in run_controls:
             if isinstance(label, tk.StringVar):
@@ -1195,10 +1284,10 @@ class FitApp:
             )
 
         ttk.Checkbutton(run_frame, text="Include strain", variable=self.strain_var).grid(
-            row=7, column=0, columnspan=2, sticky="w", pady=(4, 2)
+            row=4, column=0, columnspan=2, sticky="w", pady=(4, 2)
         )
         ttk.Checkbutton(run_frame, text="Include roughness", variable=self.roughness_var).grid(
-            row=7, column=2, columnspan=2, sticky="w", pady=(4, 2)
+            row=4, column=2, columnspan=2, sticky="w", pady=(4, 2)
         )
 
         self.simulate_button = ttk.Button(
@@ -1207,14 +1296,14 @@ class FitApp:
             command=self.simulate_pattern,
             style="Simulate.TButton",
         )
-        self.simulate_button.grid(row=8, column=0, sticky="ew", padx=(0, 4), pady=(6, 2))
+        self.simulate_button.grid(row=5, column=0, sticky="ew", padx=(0, 4), pady=(6, 2))
         self.run_button = ttk.Button(
             run_frame,
             text="Run fit",
             command=self.run_fit,
             style="Run.TButton",
         )
-        self.run_button.grid(row=8, column=1, sticky="ew", padx=(0, 4), pady=(6, 2))
+        self.run_button.grid(row=5, column=1, sticky="ew", padx=(0, 4), pady=(6, 2))
         self.pause_button = ttk.Button(
             run_frame,
             text="Pause fit",
@@ -1222,7 +1311,7 @@ class FitApp:
             state=tk.DISABLED,
             style="Pause.TButton",
         )
-        self.pause_button.grid(row=8, column=2, sticky="ew", padx=(0, 4), pady=(6, 2))
+        self.pause_button.grid(row=5, column=2, sticky="ew", padx=(0, 4), pady=(6, 2))
         self.stop_button = ttk.Button(
             run_frame,
             text="Stop fit",
@@ -1230,19 +1319,19 @@ class FitApp:
             state=tk.DISABLED,
             style="Stop.TButton",
         )
-        self.stop_button.grid(row=8, column=3, sticky="ew", padx=(4, 0), pady=(6, 2))
+        self.stop_button.grid(row=5, column=3, sticky="ew", padx=(4, 0), pady=(6, 2))
 
         ttk.Button(run_frame, text="Save setup/results...", command=self._save_project).grid(
-            row=9, column=0, columnspan=2, sticky="ew", padx=(0, 4), pady=2
+            row=6, column=0, columnspan=2, sticky="ew", padx=(0, 4), pady=2
         )
         ttk.Button(run_frame, text="Load setup/results...", command=self._load_project).grid(
-            row=9, column=2, columnspan=2, sticky="ew", padx=(4, 0), pady=2
+            row=6, column=2, columnspan=2, sticky="ew", padx=(4, 0), pady=2
         )
         ttk.Button(run_frame, text="Save plots...", command=self._save_plot_image).grid(
-            row=10, column=0, columnspan=2, sticky="ew", padx=(0, 4), pady=2
+            row=7, column=0, columnspan=2, sticky="ew", padx=(0, 4), pady=2
         )
         ttk.Button(run_frame, text="Export graph data...", command=self._export_graph_data).grid(
-            row=10, column=2, columnspan=2, sticky="ew", padx=(4, 0), pady=2
+            row=7, column=2, columnspan=2, sticky="ew", padx=(4, 0), pady=2
         )
 
         self.status_label = ttk.Label(
@@ -1251,15 +1340,20 @@ class FitApp:
             wraplength=390,
             style="Status.TLabel",
         )
-        self.status_label.grid(row=11, column=0, columnspan=4, sticky="ew", pady=(4, 2))
+        self.status_label.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(4, 2))
         for column in (1, 3):
             run_frame.columnconfigure(column, weight=1)
 
         parameter_tabs = ttk.Notebook(sidebar)
         parameter_tabs.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
 
-        self.kinematic_frame = ttk.Frame(parameter_tabs, padding=8, style="Panel.TFrame")
-        parameter_tabs.add(self.kinematic_frame, text="Kinematic parameters")
+        kinematic_panel = ttk.Frame(parameter_tabs, style="Panel.TFrame")
+        parameter_tabs.add(kinematic_panel, text="Kinematic")
+        kinematic_tabs = ttk.Notebook(kinematic_panel)
+        kinematic_tabs.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        self.kinematic_frame = ttk.Frame(kinematic_tabs, padding=8, style="Panel.TFrame")
+        kinematic_tabs.add(self.kinematic_frame, text="Film and fit")
         self._add_accent_strip(self.kinematic_frame, UI_COLORS["kinematic"])
         ttk.Label(self.kinematic_frame, text="Fit").grid(row=0, column=1, sticky="ew")
         ttk.Label(self.kinematic_frame, text="Value").grid(row=0, column=2, sticky="ew")
@@ -1297,8 +1391,102 @@ class FitApp:
         self.kinematic_frame.columnconfigure(4, weight=1)
         self.kinematic_frame.columnconfigure(5, weight=1)
 
-        self.dynamic_film_frame = ttk.Frame(parameter_tabs, padding=8, style="Panel.TFrame")
-        parameter_tabs.add(self.dynamic_film_frame, text="Dynamic film parameters")
+        self.kinematic_substrate_frame = ttk.Frame(
+            kinematic_tabs, padding=8, style="Panel.TFrame"
+        )
+        kinematic_tabs.add(self.kinematic_substrate_frame, text="Substrate")
+        self._add_accent_strip(self.kinematic_substrate_frame, UI_COLORS["substrate"])
+        ttk.Checkbutton(
+            self.kinematic_substrate_frame,
+            text="Include substrate peak",
+            variable=self.kin_substrate_var,
+        ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 6))
+        self.kinematic_substrate_controls_frame = ttk.Frame(
+            self.kinematic_substrate_frame, style="Panel.TFrame"
+        )
+        self.kinematic_substrate_controls_frame.grid(
+            row=1, column=0, columnspan=6, sticky="nsew"
+        )
+        ttk.Label(self.kinematic_substrate_controls_frame, text="Fit").grid(
+            row=0, column=1, sticky="ew"
+        )
+        ttk.Label(self.kinematic_substrate_controls_frame, text="Value").grid(
+            row=0, column=2, sticky="ew"
+        )
+        ttk.Label(self.kinematic_substrate_controls_frame, text="Min").grid(
+            row=0, column=3, sticky="ew"
+        )
+        ttk.Label(self.kinematic_substrate_controls_frame, text="Max").grid(
+            row=0, column=4, sticky="ew"
+        )
+        ttk.Label(self.kinematic_substrate_controls_frame, text="Range").grid(
+            row=0, column=5, sticky="ew"
+        )
+        substrate_peak_controls = [
+            (
+                "Integrated intensity",
+                self.kin_substrate_intensity_fit_enabled_var,
+                self.kin_substrate_intensity_start_var,
+                self.kin_substrate_intensity_min_var,
+                self.kin_substrate_intensity_max_var,
+                self.kin_substrate_intensity_fit_var,
+            ),
+            (
+                "FWHM (deg)",
+                self.kin_substrate_width_fit_enabled_var,
+                self.kin_substrate_width_start_var,
+                self.kin_substrate_width_min_var,
+                self.kin_substrate_width_max_var,
+                self.kin_substrate_width_fit_var,
+            ),
+            (
+                "d spacing (Å)",
+                self.kin_substrate_d_fit_enabled_var,
+                self.kin_substrate_d_start_var,
+                self.kin_substrate_d_min_var,
+                self.kin_substrate_d_max_var,
+                self.kin_substrate_d_fit_var,
+            ),
+        ]
+        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(
+            substrate_peak_controls, start=1
+        ):
+            ttk.Label(self.kinematic_substrate_controls_frame, text=label).grid(
+                row=row, column=0, sticky="w"
+            )
+            ttk.Checkbutton(
+                self.kinematic_substrate_controls_frame, variable=fit_enabled_var
+            ).grid(row=row, column=1, sticky="ew")
+            ttk.Entry(
+                self.kinematic_substrate_controls_frame, textvariable=start_var, width=7
+            ).grid(row=row, column=2, sticky="ew")
+            ttk.Entry(
+                self.kinematic_substrate_controls_frame, textvariable=min_var, width=7
+            ).grid(row=row, column=3, sticky="ew")
+            ttk.Entry(
+                self.kinematic_substrate_controls_frame, textvariable=max_var, width=7
+            ).grid(row=row, column=4, sticky="ew")
+            self._add_range_indicator(
+                self.kinematic_substrate_controls_frame,
+                row,
+                label,
+                start_var,
+                min_var,
+                max_var,
+                fit_var,
+                fit_enabled_var,
+            )
+        for column in range(2, 6):
+            self.kinematic_substrate_controls_frame.columnconfigure(column, weight=1)
+        self.kinematic_substrate_frame.columnconfigure(0, weight=1)
+
+        dynamic_panel = ttk.Frame(parameter_tabs, style="Panel.TFrame")
+        parameter_tabs.add(dynamic_panel, text="Dynamic")
+        dynamic_tabs = ttk.Notebook(dynamic_panel)
+        dynamic_tabs.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        self.dynamic_film_frame = ttk.Frame(dynamic_tabs, padding=8, style="Panel.TFrame")
+        dynamic_tabs.add(self.dynamic_film_frame, text="Film")
         self._add_accent_strip(self.dynamic_film_frame, UI_COLORS["film"])
         ttk.Label(self.dynamic_film_frame, text="Structure file").grid(row=0, column=0, sticky="w")
         ttk.Combobox(
@@ -1346,8 +1534,8 @@ class FitApp:
         self.dynamic_film_frame.columnconfigure(4, weight=1)
         self.dynamic_film_frame.columnconfigure(5, weight=1)
 
-        self.dynamic_fit_frame = ttk.Frame(parameter_tabs, padding=8, style="Panel.TFrame")
-        parameter_tabs.add(self.dynamic_fit_frame, text="Dynamic fit parameters")
+        self.dynamic_fit_frame = ttk.Frame(dynamic_tabs, padding=8, style="Panel.TFrame")
+        dynamic_tabs.add(self.dynamic_fit_frame, text="Calculation and fit")
         self._add_accent_strip(self.dynamic_fit_frame, UI_COLORS["fit"])
         ttk.Label(self.dynamic_fit_frame, text="Dynamic backend").grid(row=0, column=0, sticky="w")
         ttk.Combobox(
@@ -1420,8 +1608,8 @@ class FitApp:
         self.dynamic_fit_frame.columnconfigure(4, weight=1)
         self.dynamic_fit_frame.columnconfigure(5, weight=1)
 
-        self.dynamic_substrate_frame = ttk.Frame(parameter_tabs, padding=8, style="Panel.TFrame")
-        parameter_tabs.add(self.dynamic_substrate_frame, text="Dynamic substrate setup")
+        self.dynamic_substrate_frame = ttk.Frame(dynamic_tabs, padding=8, style="Panel.TFrame")
+        dynamic_tabs.add(self.dynamic_substrate_frame, text="Substrate")
         self._add_accent_strip(self.dynamic_substrate_frame, UI_COLORS["substrate"])
         ttk.Label(self.dynamic_substrate_frame, text="Structure file").grid(row=0, column=0, sticky="w")
         ttk.Combobox(
@@ -1481,8 +1669,13 @@ class FitApp:
         for column in range(1, 6):
             self.dynamic_substrate_frame.columnconfigure(column, weight=1)
 
-        self.strain_frame = ttk.Frame(parameter_tabs, padding=8, style="Panel.TFrame")
-        parameter_tabs.add(self.strain_frame, text="Strain parameters")
+        optional_panel = ttk.Frame(parameter_tabs, style="Panel.TFrame")
+        parameter_tabs.add(optional_panel, text="Strain / roughness")
+        optional_tabs = ttk.Notebook(optional_panel)
+        optional_tabs.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        self.strain_frame = ttk.Frame(optional_tabs, padding=8, style="Panel.TFrame")
+        optional_tabs.add(self.strain_frame, text="Strain")
         self._add_accent_strip(self.strain_frame, UI_COLORS["strain"])
         ttk.Label(self.strain_frame, text="").grid(row=0, column=0, sticky="w")
         ttk.Label(self.strain_frame, text="Fit").grid(row=0, column=1, sticky="ew")
@@ -1529,8 +1722,8 @@ class FitApp:
         for column in range(2, 6):
             self.strain_frame.columnconfigure(column, weight=1)
 
-        rough_frame = ttk.Frame(parameter_tabs, padding=8, style="Panel.TFrame")
-        parameter_tabs.add(rough_frame, text="Roughness parameters")
+        rough_frame = ttk.Frame(optional_tabs, padding=8, style="Panel.TFrame")
+        optional_tabs.add(rough_frame, text="Roughness")
         self._add_accent_strip(rough_frame, UI_COLORS["roughness"])
         ttk.Label(rough_frame, text="").grid(row=0, column=0, sticky="w")
         ttk.Label(rough_frame, text="Fit").grid(row=0, column=1, sticky="ew")
@@ -1568,6 +1761,25 @@ class FitApp:
         rough_frame.columnconfigure(4, weight=1)
         rough_frame.columnconfigure(5, weight=1)
 
+        optimization_frame = ttk.Frame(parameter_tabs, padding=8, style="Panel.TFrame")
+        parameter_tabs.add(optimization_frame, text="Optimization / simulation")
+        self._add_accent_strip(optimization_frame, UI_COLORS["fit"])
+        optimization_controls = [
+            ("Seed", self.seed_var, 0, 0),
+            ("Progress update interval", self.interval_var, 0, 2),
+            ("DE max iterations", self.maxiter_var, 1, 0),
+            ("DE population size", self.popsize_var, 1, 2),
+            ("Local max evaluations", self.local_var, 2, 0),
+            ("Polish iterations", self.polish_var, 2, 2),
+        ]
+        for label, var, row, column in optimization_controls:
+            ttk.Label(optimization_frame, text=label).grid(row=row, column=column, sticky="w")
+            ttk.Entry(optimization_frame, textvariable=var, width=10).grid(
+                row=row, column=column + 1, sticky="ew", padx=(4, 8), pady=2
+            )
+        optimization_frame.columnconfigure(1, weight=1)
+        optimization_frame.columnconfigure(3, weight=1)
+
         summary_frame = ttk.LabelFrame(sidebar, text="Fit results")
         summary_frame.pack(fill=tk.X)
         self._add_accent_strip(summary_frame, UI_COLORS["setup"])
@@ -1595,6 +1807,9 @@ class FitApp:
 
         plot_frame = ttk.Frame(main_pane, padding=(0, 10, 10, 10))
         main_pane.add(plot_frame, weight=1)
+        self.root.after(
+            100, lambda: main_pane.sashpos(0, round(main_pane.winfo_width() * 0.4))
+        )
         self.figure = Figure(figsize=(9.5, 8), constrained_layout=True)
         self.loss_axis = self.figure.add_subplot(311)
         self.fit_axis = self.figure.add_subplot(312)
@@ -1612,7 +1827,13 @@ class FitApp:
         watermark.pack(fill=tk.X, pady=(4, 0))
         watermark.bind("<Button-1>", lambda _event: webbrowser.open_new(GENL_DOI_URL))
         self._draw_empty_plot()
-        self.kinematic_widgets = self._collect_children(self.kinematic_frame)
+        self.kinematic_widgets = (
+            self._collect_children(self.kinematic_frame)
+            + self._collect_children(self.kinematic_substrate_frame)
+        )
+        self.kinematic_substrate_widgets = self._collect_children(
+            self.kinematic_substrate_controls_frame
+        )
         self.dynamic_widgets = (
             self._collect_children(self.dynamic_film_frame)
             + self._collect_children(self.dynamic_fit_frame)
@@ -1719,6 +1940,11 @@ class FitApp:
         is_dynamic = self.model_var.get() == "Dynamic"
         self._set_widgets_enabled(self.dynamic_widgets, is_dynamic)
         self._set_widgets_enabled(self.kinematic_widgets, not is_dynamic)
+        self._sync_kinematic_substrate_controls()
+
+    def _sync_kinematic_substrate_controls(self) -> None:
+        enabled = self.model_var.get() == "Kinematic" and bool(self.kin_substrate_var.get())
+        self._set_widgets_enabled(self.kinematic_substrate_widgets, enabled)
 
     def _sync_optional_controls(self) -> None:
         self._set_widgets_enabled(self.strain_widgets, bool(self.strain_var.get()))
@@ -1755,6 +1981,10 @@ class FitApp:
 
     def _on_strain_changed(self, *_args: object) -> None:
         self._sync_optional_controls()
+        self._clear_fit_result_values()
+
+    def _on_kinematic_substrate_changed(self, *_args: object) -> None:
+        self._sync_kinematic_substrate_controls()
         self._clear_fit_result_values()
 
     def _browse_data_file(self) -> None:
@@ -1929,6 +2159,7 @@ class FitApp:
             self.interval_var.set(str(setup["interval"]))
             self.strain_var.set(bool(setup["include_strain"]))
             self.roughness_var.set(bool(setup["include_roughness"]))
+            self.kin_substrate_var.set(bool(setup.get("include_kinematic_substrate", False)))
 
             self.axis_mode = "q" if axis == "q" else "twotheta"
             self.axis_var.set(axis)
@@ -1959,6 +2190,43 @@ class FitApp:
                     self.kin_bkg_b_fit_enabled_var,
                 ),
                 setup["kinematic_fit_flags"],
+            )
+            kinematic_substrate = setup.get("kinematic_substrate_settings")
+            if kinematic_substrate is not None:
+                for key, variables in (
+                    (
+                        "intensity",
+                        (
+                            self.kin_substrate_intensity_start_var,
+                            self.kin_substrate_intensity_min_var,
+                            self.kin_substrate_intensity_max_var,
+                        ),
+                    ),
+                    (
+                        "width",
+                        (
+                            self.kin_substrate_width_start_var,
+                            self.kin_substrate_width_min_var,
+                            self.kin_substrate_width_max_var,
+                        ),
+                    ),
+                    (
+                        "d_spacing",
+                        (
+                            self.kin_substrate_d_start_var,
+                            self.kin_substrate_d_min_var,
+                            self.kin_substrate_d_max_var,
+                        ),
+                    ),
+                ):
+                    set_triplet(variables, kinematic_substrate[key])
+            set_flags(
+                (
+                    self.kin_substrate_intensity_fit_enabled_var,
+                    self.kin_substrate_width_fit_enabled_var,
+                    self.kin_substrate_d_fit_enabled_var,
+                ),
+                setup.get("kinematic_substrate_fit_flags", (True, True, True)),
             )
 
             film = setup["film_settings"]
@@ -2201,6 +2469,9 @@ class FitApp:
         self.kin_bkg_b_min_var.set("0.0")
         self.kin_bkg_b_max_var.set("3.0")
         self.kin_debye_var.set(f"{sample.debye_waller_coeff:.6g}")
+        self.kin_substrate_d_start_var.set(f"{d0:.6g}")
+        self.kin_substrate_d_min_var.set(f"{d0 * 0.995:.6g}")
+        self.kin_substrate_d_max_var.set(f"{d0 * 1.005:.6g}")
 
     def _set_sample_layer_defaults(self, sample: SampleConfig) -> None:
         self.film_filename_var.set(sample.film_filename)
@@ -2363,6 +2634,9 @@ class FitApp:
             self.kin_bkg_a_fit_var,
             self.kin_bkg_b_fit_var,
             self.kin_debye_fit_var,
+            self.kin_substrate_intensity_fit_var,
+            self.kin_substrate_width_fit_var,
+            self.kin_substrate_d_fit_var,
             self.film_n_fit_var,
             self.film_scale_fit_var,
             self.film_area_fit_var,
@@ -2395,6 +2669,28 @@ class FitApp:
             self.kin_bkg_b_fit_var.set(self.kin_bkg_b_start_var.get())
             self.kin_debye_fit_var.set(self.kin_debye_var.get())
             offset = 6
+            if bool(config["include_kinematic_substrate"]):
+                self.kin_substrate_intensity_start_var.set(
+                    self._format_fit_result(float(params[offset]))
+                )
+                self.kin_substrate_width_start_var.set(
+                    self._format_fit_result(float(params[offset + 1]))
+                )
+                self.kin_substrate_d_start_var.set(
+                    self._format_fit_result(float(params[offset + 2]))
+                )
+                self.kin_substrate_intensity_fit_var.set(
+                    self.kin_substrate_intensity_start_var.get()
+                )
+                self.kin_substrate_width_fit_var.set(
+                    self.kin_substrate_width_start_var.get()
+                )
+                self.kin_substrate_d_fit_var.set(self.kin_substrate_d_start_var.get())
+                offset += 3
+            else:
+                self.kin_substrate_intensity_fit_var.set("off")
+                self.kin_substrate_width_fit_var.set("off")
+                self.kin_substrate_d_fit_var.set("off")
         else:
             self.film_n_start_var.set(self._format_fit_result(float(params[0])))
             self.film_scale_start_var.set(self._format_fit_result(float(params[1])))
@@ -2454,6 +2750,21 @@ class FitApp:
                 if enabled
             )
             offset = 6
+            if bool(config["include_kinematic_substrate"]):
+                settings = config["kinematic_substrate_settings"]
+                substrate_rows = (
+                    ("substrate integrated intensity", params[offset], settings["intensity"]),
+                    ("substrate FWHM", params[offset + 1], settings["width"]),
+                    ("substrate d spacing", params[offset + 2], settings["d_spacing"]),
+                )
+                rows.extend(
+                    (name, float(value), float(bounds[1]), float(bounds[2]))
+                    for (name, value, bounds), enabled in zip(
+                        substrate_rows, config["kinematic_substrate_fit_flags"]
+                    )
+                    if enabled
+                )
+                offset += 3
         else:
             settings = config["film_settings"]
             base = (
@@ -2554,6 +2865,11 @@ class FitApp:
             bool(self.kin_bkg_a_fit_enabled_var.get()),
             bool(self.kin_bkg_b_fit_enabled_var.get()),
         )
+        kinematic_substrate_fit_flags = (
+            bool(self.kin_substrate_intensity_fit_enabled_var.get()),
+            bool(self.kin_substrate_width_fit_enabled_var.get()),
+            bool(self.kin_substrate_d_fit_enabled_var.get()),
+        )
         film_fit_flags = (
             bool(self.film_n_fit_enabled_var.get()),
             bool(self.film_scale_fit_enabled_var.get()),
@@ -2606,6 +2922,21 @@ class FitApp:
             float(self.kin_bkg_b_max_var.get()),
         )
         kinematic_debye = float(self.kin_debye_var.get())
+        kinematic_substrate_intensity = (
+            float(self.kin_substrate_intensity_start_var.get()),
+            float(self.kin_substrate_intensity_min_var.get()),
+            float(self.kin_substrate_intensity_max_var.get()),
+        )
+        kinematic_substrate_width = (
+            float(self.kin_substrate_width_start_var.get()),
+            float(self.kin_substrate_width_min_var.get()),
+            float(self.kin_substrate_width_max_var.get()),
+        )
+        kinematic_substrate_d = (
+            float(self.kin_substrate_d_start_var.get()),
+            float(self.kin_substrate_d_min_var.get()),
+            float(self.kin_substrate_d_max_var.get()),
+        )
         for enabled, name, values in zip(
             kinematic_fit_flags,
             (
@@ -2637,6 +2968,42 @@ class FitApp:
             raise ValueError("kinematic resolution must be positive")
         if kinematic_scale[0] <= 0 or (kinematic_fit_flags[3] and kinematic_scale[1] <= 0):
             raise ValueError("kinematic scale must be positive")
+        include_kinematic_substrate = (
+            self.model_var.get() == "Kinematic" and bool(self.kin_substrate_var.get())
+        )
+        if include_kinematic_substrate:
+            for enabled, name, values in zip(
+                kinematic_substrate_fit_flags,
+                (
+                    "kinematic substrate integrated intensity",
+                    "kinematic substrate FWHM",
+                    "kinematic substrate d spacing",
+                ),
+                (
+                    kinematic_substrate_intensity,
+                    kinematic_substrate_width,
+                    kinematic_substrate_d,
+                ),
+            ):
+                if enabled:
+                    validate_start_min_max(
+                        name, *values, allow_outside_start=allow_outside_start
+                    )
+            if kinematic_substrate_intensity[0] < 0 or (
+                kinematic_substrate_fit_flags[0] and kinematic_substrate_intensity[1] < 0
+            ):
+                raise ValueError("kinematic substrate intensity must be non-negative")
+            if kinematic_substrate_width[0] <= 0 or (
+                kinematic_substrate_fit_flags[1] and kinematic_substrate_width[1] <= 0
+            ):
+                raise ValueError("kinematic substrate FWHM must be positive")
+            minimum_d = wavelength / 2.0
+            if kinematic_substrate_d[0] < minimum_d or (
+                kinematic_substrate_fit_flags[2] and kinematic_substrate_d[1] < minimum_d
+            ):
+                raise ValueError(
+                    "kinematic substrate d spacing must be at least half the X-ray wavelength"
+                )
 
         film_filename = self.film_filename_var.get()
         substrate_filename = self.substrate_filename_var.get()
@@ -2832,7 +3199,9 @@ class FitApp:
             "interval": max(1, int(self.interval_var.get())),
             "include_strain": include_strain,
             "include_roughness": bool(self.roughness_var.get()),
+            "include_kinematic_substrate": include_kinematic_substrate,
             "kinematic_fit_flags": kinematic_fit_flags,
+            "kinematic_substrate_fit_flags": kinematic_substrate_fit_flags,
             "film_fit_flags": film_fit_flags,
             "dynamic_fit_flags": dynamic_fit_flags,
             "strain_fit_flags": strain_fit_flags,
@@ -2846,6 +3215,11 @@ class FitApp:
                 "bkg_a": kinematic_bkg_a,
                 "bkg_b": kinematic_bkg_b,
                 "debye_waller_coeff": kinematic_debye,
+            },
+            "kinematic_substrate_settings": {
+                "intensity": kinematic_substrate_intensity,
+                "width": kinematic_substrate_width,
+                "d_spacing": kinematic_substrate_d,
             },
             "film_settings": {
                 "filename": film_filename,
@@ -2894,6 +3268,7 @@ class FitApp:
                 observed,
                 sample,
                 debye_waller_coeff=float(kinematic_settings["debye_waller_coeff"]),
+                include_substrate=bool(config["include_kinematic_substrate"]),
                 include_strain=bool(config["include_strain"]),
                 include_roughness=bool(config["include_roughness"]),
                 wavelength=float(config["wavelength"]),
@@ -2905,6 +3280,8 @@ class FitApp:
                 config["roughness_settings"],
                 kinematic_settings,
                 config["strain_settings"],
+                include_substrate=bool(config["include_kinematic_substrate"]),
+                substrate_peak_settings=config["kinematic_substrate_settings"],
             )
         else:
             model = DynamicModel(
@@ -2940,6 +3317,8 @@ class FitApp:
     def _fit_mask_for_config(self, config: dict[str, object], n_params: int) -> np.ndarray:
         if config["model"] == "Kinematic":
             flags = list(config["kinematic_fit_flags"])
+            if bool(config["include_kinematic_substrate"]):
+                flags.extend(list(config["kinematic_substrate_fit_flags"]))
         else:
             flags = list(config["film_fit_flags"]) + list(config["dynamic_fit_flags"])
             flags.append(bool(config["substrate_scale_fit_flag"]))
@@ -2959,6 +3338,8 @@ class FitApp:
     def _has_selected_fit_parameter(self, config: dict[str, object]) -> bool:
         if config["model"] == "Kinematic":
             flags = list(config["kinematic_fit_flags"])
+            if bool(config["include_kinematic_substrate"]):
+                flags.extend(list(config["kinematic_substrate_fit_flags"]))
         else:
             flags = list(config["film_fit_flags"]) + list(config["dynamic_fit_flags"])
             flags.append(bool(config["substrate_scale_fit_flag"]))
@@ -3008,6 +3389,7 @@ class FitApp:
                 rmse,
                 bool(config["include_strain"]),
                 bool(config["include_roughness"]),
+                bool(config["include_kinematic_substrate"]),
                 film_settings if config["model"] == "Dynamic" else None,
                 substrate_settings if config["model"] == "Dynamic" else None,
             )
@@ -3397,6 +3779,7 @@ class FitApp:
                 rmse,
                 bool(config["include_strain"]),
                 bool(config["include_roughness"]),
+                bool(config["include_kinematic_substrate"]),
                 film_settings if config["model"] == "Dynamic" else None,
                 substrate_settings if config["model"] == "Dynamic" else None,
             )
