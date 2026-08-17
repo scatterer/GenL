@@ -292,6 +292,34 @@ class CoreTests(unittest.TestCase):
         np.testing.assert_allclose(reflection.amplitude_s, fused.amplitude_s, rtol=1e-10, atol=1e-13)
         np.testing.assert_allclose(reflection.amplitude_p, fused.amplitude_p, rtol=1e-10, atol=1e-13)
 
+    def test_gaas_low_angle_reflectivity_is_passive(self):
+        angle = 0.69
+        q = 4.0 * np.pi / 1.54056 * np.sin(np.deg2rad(angle))
+        result = calc_dynamic_density(
+            np.array([q]),
+            1.54056,
+            [
+                Layer(
+                    direction=3,
+                    n=1e8,
+                    filename="GaAs_alt_fractional.vasp",
+                    scale=1.001,
+                    area_scale=1.001,
+                )
+            ],
+            control=Control(pol=0, model="density"),
+            instrument=Instrument(theta_m=2),
+            poscar_dir=POSCAR,
+            form_factor_dir=DATA,
+            vacuum_thick=20,
+            slices=400,
+            max_q0=75,
+            step_q0=0.01,
+            propagation_backend="reflection",
+        )
+
+        self.assertLessEqual(result.refl[0], 1.0)
+
     def test_reflection_matches_fused_for_bundled_materials_and_polarizations(self):
         if dynamic._prepare_substrate_reflection_pair_numba is None:
             self.skipTest("numba reflection backend is unavailable")

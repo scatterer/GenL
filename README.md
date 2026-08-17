@@ -173,7 +173,9 @@ Run the GaAs substrate-only dynamic example translated from
 ```
 
 This writes `validation/gaas_substrate_dynamic.csv` and
-`validation/gaas_substrate_dynamic.png`. For a faster coarse run:
+`validation/gaas_substrate_dynamic.png`. The Python density slicing preserves
+the shared unit-cell boundary samples used by MATLAB, preventing nonphysical
+low-angle substrate reflectivity above one. For a faster coarse run:
 
 ```bash
 .venv/bin/python validation/run_gaas_substrate.py --theta-step 0.5 --slices 100 --max-q0 30 --step-q0 0.05

@@ -1279,9 +1279,10 @@ def _build_substrate_state(
                 ff[:, atom_idx],
             )
 
-    substrate_end = vacuum_slices + slices * 2
+    # MATLAB's adjacent inclusive ranges share their boundary sample.
+    substrate_end = vacuum_slices + slices * 2 - 1
     rho_0 = rho_e[: vacuum_slices + slices]
-    rho_1 = rho_e[vacuum_slices + slices : substrate_end]
+    rho_1 = rho_e[vacuum_slices + slices - 1 : substrate_end + 1]
     return _SubstrateState(
         dz=dz,
         substrate_end=substrate_end,
