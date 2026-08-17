@@ -5,20 +5,16 @@ The original MATLAB source code is kept under `matlab/`:
 
 - `matlab/kinematic_only/`: original kinematic-only MATLAB GUI and command-line source.
 - `matlab/kinematic_and_dynamic/`: original MATLAB command-line source for kinematic and dynamic diffraction, including fitting.
-- `matlab/kinematic_and_dynamic/subroutines_updated/`: current MATLAB dynamic-model
-  reference, including reflection-recursion propagation.
 
-Shared inputs for the MATLAB and Python implementations are kept under `data/`:
-
-- `data/examples/`: bundled experimental and reference patterns.
-- `data/form_factors/`: atomic and scattering-factor tables.
-- `data/structures/`: POSCAR/VASP crystal structures.
+The shared example data, POSCAR files, form-factor tables, and bundled binaries
+remain in the original `kinematic_only/` and `kinematic_and_dynamic/` data
+folders so the MATLAB and Python ports can read the same inputs.
 
 Folder `matlab/kinematic_only` includes a graphical user interface for fitting single layers and a command line version where more complicated structures can be fitted.
 
 Binaries:
 
-Binary is available for MacOS Ventura, Windows 10 and Windows 11 in `matlab/binaries`.
+Binary is available for MacOS Ventura, Windows 10 and Windows 11 in `kinematic_only/binaries`.
 
 When running the installer, the free MATLAB runtime environment will be installed and the application appears in Applications.
 
@@ -47,36 +43,23 @@ The Python port lives in `src/genl`. It currently includes:
 - Gaussian instrumental broadening
 - kinematic scattering for POSCAR-backed layers
 - density-based dynamic scattering with Numba-accelerated density generation
-  and reflection-recursion or transfer-matrix propagation when `numba` is installed
+  and transfer-matrix propagation when `numba` is installed
 - substrate-only and substrate + film dynamic stacks
 
-Dynamic scattering supports four backends:
+Dynamic scattering supports three backends:
 
-- `auto`: use Numba reflection recursion when available, then fused Numba
-  transfer matrices, then the legacy NumPy/vectorized path.
-- `reflection`: require the Numba reflection-recursion backend translated from
-  `subroutines_updated/propagate_vectorized_chunks_opt.m`.
+- `auto`: use the Numba density and fused propagation kernels when available,
+  otherwise fall back to the legacy NumPy/vectorized path.
 - `fused`: require the Numba density and fused propagation kernels.
 - `legacy`: use the previous NumPy density and Python vectorized propagation
   path with the existing repeated-matrix combiner.
-
-The GUI dynamic fit model automatically reuses a `DynamicWorkspace`. It caches
-parsed POSCAR/form-factor material data, substrate density and transfer
-matrices or substrate reflection amplitudes, computes sigma/pi polarization
-together in the Numba kernels,
-and shares substrate work across the thickness distribution used for film
-roughness. The one-entry substrate cache invalidates automatically when its
-scale or other substrate inputs change. Direct API callers can get the same
-reuse by passing one `DynamicWorkspace()` to repeated `calc_dynamic_density`
-calls; omitting it retains the stateless behavior.
 
 Set the backend in code with `propagation_backend=...`, in the GUI with the
 `Dynamic backend` selector in `Dynamic fit parameters`, or globally with
 `GENL_DYNAMIC_BACKEND=legacy` before launch.
 
 If you use GenL, please cite the original GenL article:
-Anna L. Ravensburg, Johan Bylin, Vassilios Kapaklis and Gunnar K. Pálsson,
-J. Appl. Cryst. 59, 968-977 (2026),
+Vassilios Kapaklis and Gunnar K. Palsson, J. Appl. Cryst. 59, 968-977 (2026),
 https://doi.org/10.1107/S1600576726002566.
 
 The Python project is organized as:
@@ -88,19 +71,7 @@ The Python project is organized as:
 - `validation/`: numerical validation scripts and compatibility wrappers.
 - `tests/`: unit tests.
 - `matlab/`: original MATLAB source, separated from the Python package.
-- `data/`: inputs shared by the MATLAB and Python implementations.
 - `archive/`: older or retired material kept for reference, not active code.
-
-Create an environment and install the Python port from a repository checkout:
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -e ".[fast]"
-```
-
-The `fast` extra installs Numba acceleration. Omit `[fast]` to use the NumPy
-fallback. The current editable installation is required because the package
-reads the shared top-level `data/` folder in this repository.
 
 Run the bundled tests from the repository root:
 
@@ -153,17 +124,11 @@ For a quick plotting smoke test, lower the optimizer budget:
 .venv/bin/python validation/fit_fe_100a_dynamic.py --plot-progress --maxiter 2 --popsize 3 --local-max-nfev 20 --polish-maxiter 20
 ```
 
-Benchmark the optional Numba reflection-recursion and transfer-matrix acceleration:
+Benchmark the optional Numba density and transfer-matrix acceleration:
 
 ```bash
 .venv/bin/python validation/benchmark_dynamic_propagation.py
 ```
-
-The benchmark reports reflection, cached fused, uncached fused, and legacy
-timings plus numerical differences. For the bundled Fe range on the
-development machine, cached reflection recursion takes about 0.0062 seconds:
-approximately 1.25 times faster than cached fused propagation and 16 times
-faster than legacy, with reflection differences below `2e-14`.
 
 Run the GaAs substrate-only dynamic example translated from
 `matlab/kinematic_and_dynamic/run_gaas_substrate.m`:
@@ -213,24 +178,11 @@ and fitted window. Experimental data is plotted as soon as the GUI opens and
 refreshes when the data file, wavelength, horizontal axis, or range changes. Use
 `Simulate` to calculate one pattern from the current parameter values and fixed
 inputs without running the optimizer; use `Run fit` when the current setup is
-ready to optimize. `Save setup/results...` writes a versioned `*.genl.json`
-project containing the complete setup, fit selections, bounds, optimizer
-settings, latest curves, progress history, electron-density profile, and fit
-summary. `Load setup/results...` restores the controls and saved plots so the
-simulation can be rerun or fitted again. The existing automatic CSV and PNG
-outputs are unchanged. `Save plots...` creates separate diffraction and
-electron-density files as PNG, JPEG, TIFF, SVG, or PDF. Exported diffraction
-figures follow the GenL paper style, with data markers, a red GenL curve,
-logarithmic intensity, bottom `2theta`, and top `Q` axes. `Export graph data...`
-writes the diffraction data, fit, and residual as CSV or tab-delimited
-text, plus a separate `_density` table when an electron-density profile is
-available. Dynamic plot export requires a current dynamic density profile and
-confirms both output paths; kinematic results only provide diffraction. The
-left side keeps the run setup, Run/Stop buttons, status,
+ready to optimize. The left side keeps the run setup, Run/Stop buttons, status,
 fit summary, and tabbed parameter controls visible while the monitoring plots
 stay fixed on the right. Panels use restrained color accents to identify setup,
 kinematic, dynamic film, dynamic fit, dynamic substrate, and roughness controls.
-`Simulate`, `Run fit`, `Pause fit`, and `Stop fit` use blue, green, amber, and red button styles,
+`Simulate`, `Run fit`, and `Stop fit` use blue, green, and red button styles,
 and the status line changes color for running, complete, warning, and error
 states. During fitting, the latest parameter values are written back into the
 editable `value` boxes and range gauges; after completion they become the next
@@ -251,15 +203,12 @@ controls are enabled according to the selected model:
 - `Dynamic film parameters` tab: dynamic-model film structure file, layer
   direction, number of layers, lattice scale, area scale, and interface
   spacing. The structure-file dropdown is populated from all `*.vasp`
-  files currently present in `data/structures/`.
+  files currently present in `kinematic_and_dynamic/POSCAR`.
 - `Dynamic fit parameters` tab: dynamic-model resolution, intensity scale, and
-  linear background controls, density discretization, plus the `Dynamic
-  backend` selector. `Density slices per cell` defaults to `100`, and `Density
-  Q max` defaults to `30 1/A`; GenL rejects a reciprocal cutoff at or above the
-  real-space grid Nyquist limit. Use `auto` for normal work, `reflection` to
-  require the new Numba reflection recursion, `fused` to require the prior
-  Numba transfer-matrix kernels, and `legacy` to force the previous NumPy
-  density and vectorized propagation implementation.
+  linear background controls, plus the `Dynamic backend` selector. Use `auto`
+  for normal work, `fused` to require the Numba density and fused propagation
+  kernels, and `legacy` to force the previous NumPy density and vectorized
+  propagation implementation.
 - `Dynamic substrate setup` tab: dynamic-model substrate structure file, layer
   direction, number of layers, interface spacing, lattice scale, and area scale.
   Lattice scale has `Fit`, `Value`, `Min`, and `Max` controls; it is unchecked by
@@ -280,27 +229,16 @@ Film roughness is modeled as a Gaussian distribution of coherent film
 thicknesses, with sigma measured in planes for the kinematic model and repeated
 layers for the dynamic model; substrate/interface roughness is measured in
 angstrom and damps the coherent signal. Dynamic roughness follows the MATLAB
-path by averaging the complex amplitudes with the normalized Gaussian
-probabilities before calculating intensity. Its
+path by averaging the complex amplitudes before calculating intensity. Its
 electron-density monitor shows the probability-weighted density distribution.
 
-The GUI shows fit progress live, marks each optimizer phase in the cost plot,
-uses the same mean absolute log-error objective for global and local fitting,
-plots the current fit curve, and plots the
-evolving electron-density profile for dynamic fits. `Pause fit` waits after the
-current model evaluation and preserves the live optimizer exactly. If bounds or
-iteration budgets are edited while paused, `Resume fit` restarts the current
-stage from the latest checkpoint, clipping the retained differential-evolution
-population to the new bounds. `Stop fit` requests cancellation between model
-evaluations but retains the checkpoint; the pause control then offers
-`Resume fit`. Changing the model, data window, fixed inputs, random seed,
-population size, or fitted-parameter selection requires a new fit. Checkpoints
-are held for the current GUI session; `Run fit` deliberately clears the old
-checkpoint and starts a fresh optimization. GUI outputs
+The GUI shows fit progress live, plots the current fit curve, and plots the
+evolving electron-density profile for dynamic fits. The `Stop fit` button requests
+cancellation and interrupts the fit between optimizer evaluations. GUI outputs
 are written under `validation/` using sample-specific names, for example
 `w_10_nm_gui_dynamic_fit.csv` and `w_10_nm_gui_dynamic_fit_progress.png`.
-The plot area includes a centered citation watermark with the DOI on its own
-line; clicking it opens the article DOI.
+The plot area includes a citation watermark with the authors and DOI, and
+clicking it opens the article DOI.
 
 ## Current limitations
 
@@ -310,17 +248,3 @@ line; clicking it opens the article DOI.
   thickness components; dynamic roughness uses the MATLAB coherent-amplitude
   average.
 - Older validation launchers are kept as compatibility wrappers where useful.
-
-The pre-project-export GUI, tests, and README are preserved in
-`archive/pre_project_export_2026-08-16/` for rollback.
-The pre-dynamic-workspace calculation files are preserved in
-`archive/pre_dynamic_workspace_2026-08-17/`.
-The pre-fit-checkpoint GUI and tests are preserved in
-`archive/pre_fit_checkpoint_2026-08-17/`.
-The pre-reflection-recursion Python implementation is preserved in
-`archive/pre_reflection_recursion_2026-08-17/` with restoration instructions.
-
-## License
-
-GenL is distributed under the GNU General Public License version 3. See
-`LICENSE`.

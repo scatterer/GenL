@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use GenL, please cite the article below."
+title: "GenL"
+version: 0.1.0
+license: GPL-3.0-only
+repository-code: "https://github.com/scatterer/GenL"
+authors:
+  - family-names: Kapaklis
+    given-names: Vassilios
+  - family-names: Pálsson
+    given-names: Gunnar K.
+preferred-citation:
+  type: article
+  title: "GenL: an extensible fitting program for Laue oscillations and whole-pattern fitting"
+  authors:
+    - family-names: Ravensburg
+      given-names: Anna L.
+    - family-names: Bylin
+      given-names: Johan
+    - family-names: Kapaklis
+      given-names: Vassilios
+    - family-names: Pálsson
+      given-names: Gunnar K.
+  journal: "Journal of Applied Crystallography"
+  volume: 59
+  start: 968
+  end: 977
+  year: 2026
+  doi: "10.1107/S1600576726002566"

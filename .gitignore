@@ -32,6 +32,24 @@ codegen/
 # Cloud based storage dotfile
 .MATLABDriveTag
 
+# Python local environment
+.venv/
+.matplotlib-cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Python validation/generated outputs
+validation/*_fit.csv
+validation/*_fit_progress.png
+validation/gaas_substrate_dynamic.csv
+validation/gaas_substrate_dynamic.png
+
+# macOS local metadata
+.DS_Store
+
 # buildtool cache folder
 .buildtool/
 
