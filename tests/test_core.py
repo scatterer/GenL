@@ -55,6 +55,25 @@ class CoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Nyquist"):
             validate_density_sampling(4.0, 20, 20.0)
 
+    def test_dynamic_form_factors_include_matlab_debye_waller_factor(self):
+        q0 = np.array([0.0, 4.0])
+        prepared = dynamic._prepare_layer(
+            Layer(direction=1, n=1, filename="Fe_fractional.vasp"),
+            1.54056,
+            q0,
+            POSCAR,
+            DATA,
+        )
+        raw, _, _ = form_factors(
+            q0,
+            read_form_factor_coefficients(26, 1.54056, DATA),
+            1.0,
+        )
+        expected = raw * np.exp(-0.35 * (q0 / (4.0 * np.pi)) ** 2)
+
+        for atom_form_factor in np.asarray(prepared["ff"]).T:
+            np.testing.assert_allclose(atom_form_factor, expected)
+
     def test_save_result_plots_writes_separate_nonblank_images(self):
         update = FitUpdate(
             phase="best fit",

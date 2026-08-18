@@ -66,7 +66,8 @@ Cu K alpha (`1.5406 Å`).
 
 The Python implementation is in `src/genl/`. It provides:
 
-- POSCAR/VASP crystal-structure and atomic form-factor loading
+- POSCAR/VASP crystal-structure and atomic form-factor loading with
+  element-specific Debye-Waller damping
 - kinematic scattering for crystalline films
 - density-based dynamic scattering for substrates and film stacks
 - strain, film roughness, and substrate/interface roughness controls
@@ -85,6 +86,9 @@ or troubleshooting calculations:
 The dynamic fitter caches material, density, and substrate calculations during
 optimization. Code using the Python API can obtain the same reuse by passing a
 single `DynamicWorkspace()` to repeated `calc_dynamic_density()` calls.
+The simple kinematic GUI uses its displayed Debye-Waller coefficient; the
+POSCAR-based kinematic and dynamic engines use the element-specific values from
+the original GenL table automatically.
 
 ## GUI controls
 

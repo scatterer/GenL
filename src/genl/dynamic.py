@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .debye import debye_waller_prefactor
 from .form_factors import ELEMENT_SYMBOLS, form_factors, read_form_factor_coefficients
 from .kinematic import Control, Instrument, Layer, generate_strain, matlab_round
 from .poscar import PoscarStructure, read_poscar
@@ -1197,6 +1198,9 @@ def _prepare_layer(
                 q0,
                 read_form_factor_coefficients(atomic_number, wavelength, form_factor_dir),
                 1.0,
+            )
+            f_q = f_q * np.exp(
+                -debye_waller_prefactor(atomic_number) * (q0 / (4.0 * np.pi)) ** 2
             )
             for _ in range(int(count)):
                 ff[:, cursor] = f_q
