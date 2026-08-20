@@ -1,0 +1,137 @@
+{
+  "format": "GenL sample stack",
+  "version": 1,
+  "name": "Fe/V (4/28 ML) x 11 superlattice",
+  "description": "Nominal Fe/V superlattice structure from Fig. 9 of the GenL paper. Lattice scales are starting values and should be refined against the experimental data.",
+  "reference": "J. Appl. Cryst. 59, 968-977 (2026), https://doi.org/10.1107/S1600576726002566",
+  "nominal_period_A": 45.4,
+  "notes": "The bcc Fe and V POSCAR files contain two (001) monolayers per unit cell, so 4/28 monolayers are represented by 2/14 unit cells.",
+  "model": "dynamic",
+  "wavelength": 1.5406,
+  "substrate": {
+    "filename": "MgO_001_fractional.vasp",
+    "direction": 1,
+    "unit_cells": 1000000.0,
+    "dinterface": 0.279226,
+    "scale": 1.0,
+    "area_scale": 1.0
+  },
+  "sequence": {
+    "repetitions": 11,
+    "layers": [
+      {
+        "name": "V",
+        "filename": "V_fractional.vasp",
+        "direction": 1,
+        "unit_cells": 13.0,
+        "dinterface": 1.033,
+        "scale": 1.02552,
+        "area_scale": 1.0
+      },
+      {
+        "name": "Fe",
+        "filename": "Fe_fractional.vasp",
+        "direction": 1,
+        "unit_cells": 2.0,
+        "dinterface": 1.64691,
+        "scale": 0.97458,
+        "area_scale": 1.0
+      }
+    ]
+  },
+  "calculation": {
+    "twotheta_min": 50.0,
+    "twotheta_max": 75.0,
+    "twotheta_step": 0.02,
+    "resolution": 0.0015,
+    "intensity_scale": 8277340.0,
+    "background_a": 0.178666,
+    "background_b": -0.0892998,
+    "theta_m": 2.0,
+    "polarization": 2,
+    "vacuum_thickness": 5.0,
+    "density_slices": 50,
+    "density_max_q0": 30.0,
+    "density_step_q0": 0.1,
+    "dynamic_backend": "auto"
+  },
+  "fit_parameters": [
+    {
+      "target": "substrate.dinterface",
+      "min": 0.0,
+      "max": 1.5
+    },
+    {
+      "target": "V.dinterface",
+      "min": 0.0,
+      "max": 1.5
+    },
+    {
+      "target": "V.scale",
+      "min": 0.8,
+      "max": 1.1
+    },
+    {
+      "target": "Fe.dinterface",
+      "min": 0.0,
+      "max": 2.0
+    },
+    {
+      "target": "Fe.scale",
+      "min": 0.8,
+      "max": 1.1
+    },
+    {
+      "target": "capping.dinterface",
+      "min": 0.0,
+      "max": 2.0
+    },
+    {
+      "target": "capping.scale",
+      "min": 0.9,
+      "max": 1.1
+    },
+    {
+      "target": "calculation.intensity_scale",
+      "min": 50.0,
+      "max": 10000000.0
+    },
+    {
+      "target": "calculation.background_a",
+      "min": -10.0,
+      "max": 10.0
+    },
+    {
+      "target": "calculation.background_b",
+      "min": -0.1,
+      "max": 0.1
+    }
+  ],
+  "calculation_ranges": {
+    "resolution": [
+      0.0001,
+      0.006
+    ],
+    "intensity_scale": [
+      50.0,
+      10000000.0
+    ],
+    "background_a": [
+      -10.0,
+      10.0
+    ],
+    "background_b": [
+      -0.1,
+      0.1
+    ]
+  },
+  "capping_layer": {
+    "name": "Capping",
+    "filename": "V_fractional.vasp",
+    "direction": 1,
+    "unit_cells": 14.0,
+    "dinterface": 0.997391,
+    "scale": 1.02715,
+    "area_scale": 1.0
+  }
+}

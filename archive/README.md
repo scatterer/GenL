@@ -10,3 +10,6 @@ project structure.
 
 Do not put shared input data here if active MATLAB or Python code still reads
 it.
+
+`pre_matlab_v2_density_2026-08-20/` restores the Python version immediately
+before the analytic MATLAB-v2 density port.

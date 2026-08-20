@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genl"
+version = "0.1.0"
+description = "X-ray diffraction simulation and fitting for single-crystal films"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+  "matplotlib>=3.8",
+  "numpy>=1.24",
+  "scipy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/scatterer/GenL"
+Article = "https://doi.org/10.1107/S1600576726002566"
+
+[project.scripts]
+genl-fit-gui = "genl.gui:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+fast = [
+  "numba>=0.60",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
