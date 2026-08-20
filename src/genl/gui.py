@@ -51,6 +51,107 @@ UI_COLORS = {
     "entry_disabled": "#eceff1",
     "watermark": "#6b7280",
 }
+TOOLTIPS = {
+    "scattering_model": (
+        "Kinematic uses the single-scattering approximation. Dynamic includes "
+        "multiple scattering through the layered structure."
+    ),
+    "sample_configuration": (
+        "Choose between a single film on a substrate and a repeated superlattice structure."
+    ),
+    "wavelength": (
+        "Incident X-ray wavelength in angstroms. The default is Cu K\u03b1 radiation, 1.5406 \u00c5."
+    ),
+    "horizontal_axis": (
+        "Display and define the calculation range using either 2\u03b8 in degrees or "
+        "scattering vector q in \u00c5\u207b\u00b9."
+    ),
+    "include_strain": "Apply the strain profile defined in the Strain tab.",
+    "include_roughness": (
+        "Apply the film-thickness and substrate/interface roughness defined in the Roughness tab."
+    ),
+    "fit": "Allow this parameter to vary during fitting.",
+    "plane_spacing": "Spacing between consecutive diffracting planes in angstroms.",
+    "number_of_planes": "Number of coherently scattering atomic planes in the film.",
+    "resolution": "Gaussian instrumental broadening expressed as FWHM in degrees.",
+    "intensity_scale": (
+        "Multiplicative scale factor applied to the calculated diffraction intensity."
+    ),
+    "background_a": (
+        "Linear coefficient of the background about the center of the fitted range."
+    ),
+    "background_b": "Constant background intensity.",
+    "background_c": "Quadratic coefficient of the centered polynomial background.",
+    "debye_waller": (
+        "Coefficient controlling attenuation of scattering with increasing q due to atomic displacement."
+    ),
+    "include_substrate_peak": (
+        "Add a Lorentzian substrate reflection to the kinematic calculation."
+    ),
+    "substrate_intensity": "Integrated intensity of the kinematic substrate reflection.",
+    "substrate_fwhm": "Full width at half maximum of the substrate reflection in degrees.",
+    "substrate_d_spacing": (
+        "Substrate diffracting-plane spacing used to determine the peak position."
+    ),
+    "structure_file": "VASP structure file defining the unit cell and atomic positions.",
+    "layer_direction": (
+        "POSCAR lattice-vector direction used as the surface-normal propagation direction: 1, 2, or 3."
+    ),
+    "number_of_layers": (
+        "Number of unit cells propagated along the selected layer direction."
+    ),
+    "lattice_scale": (
+        "Multiplier applied to the lattice spacing along the propagation direction."
+    ),
+    "area_scale": (
+        "Multiplier applied to the in-plane unit-cell area and therefore the projected density."
+    ),
+    "interface_spacing": (
+        "Additional separation between this structure and the preceding layer, in angstroms."
+    ),
+    "density_slices": (
+        "Number of depth slices used to discretize the electron-density profile of each unit cell."
+    ),
+    "density_q_max": (
+        "Maximum Fourier-space sampling limit used to construct the electron-density profile."
+    ),
+    "substrate_layers": (
+        "Effective number of substrate unit cells used in the propagation calculation."
+    ),
+    "bottom_strain_amplitude": "Strain amplitude applied at the bottom of the layer.",
+    "bottom_strain_extent": (
+        "Distance over which the strain extends from the bottom into the layer."
+    ),
+    "top_strain_amplitude": "Strain amplitude applied at the top of the layer.",
+    "top_strain_extent": "Distance over which the strain extends from the top into the layer.",
+    "film_roughness": (
+        "Standard deviation of the film-thickness distribution, expressed in planes or layers."
+    ),
+    "substrate_roughness": (
+        "Gaussian width of the substrate or interface electron-density transition in angstroms."
+    ),
+    "seed": (
+        "Random-number seed used by differential evolution. Reusing a seed makes an optimization reproducible."
+    ),
+    "new_seed": "Generate a new random seed for the next optimization.",
+    "progress_interval": "Number of objective evaluations between GUI and plot updates.",
+    "de_iterations": "Maximum number of differential-evolution generations.",
+    "de_population": (
+        "Differential-evolution population multiplier. Larger values explore more candidates "
+        "but require more calculations."
+    ),
+    "local_evaluations": "Maximum objective evaluations allowed during local refinement.",
+    "polish_iterations": "Maximum iterations used for the final polishing step.",
+    "repetitions": "Number of times the repeated layer sequence is propagated.",
+    "capping_layer": "Add one non-repeated layer after the repeated sequence.",
+    "layer_structure": (
+        "VASP structure file defining this substrate, repeated layer, or capping layer."
+    ),
+    "unit_cells": "Number of unit cells of this material included in each repetition.",
+    "points_per_unit": (
+        "Number of calculated sampling points per selected horizontal-axis unit."
+    ),
+}
 
 cache_dir = ROOT / ".matplotlib-cache"
 cache_dir.mkdir(exist_ok=True)
@@ -513,6 +614,69 @@ def fit_update_from_dict(data: dict[str, object]) -> FitUpdate:
         density_rho_e=density,
         show_observed=show_observed,
     )
+
+
+class ToolTip:
+    def __init__(self, widget: tk.Widget, text: str, delay_ms: int = 500) -> None:
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self.after_id: str | None = None
+        self.window: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+        widget.bind("<Destroy>", self._hide, add="+")
+
+    def _schedule(self, _event: tk.Event | None = None) -> None:
+        self._cancel()
+        self.after_id = self.widget.after(self.delay_ms, self._show)
+
+    def _cancel(self) -> None:
+        if self.after_id is not None:
+            self.widget.after_cancel(self.after_id)
+            self.after_id = None
+
+    def _show(self) -> None:
+        self.after_id = None
+        if self.window is not None or not self.widget.winfo_exists():
+            return
+        self.window = tk.Toplevel(self.widget)
+        self.window.overrideredirect(True)
+        label = tk.Label(
+            self.window,
+            text=self.text,
+            justify=tk.LEFT,
+            wraplength=340,
+            background="#fffbe8",
+            foreground="#111827",
+            relief=tk.SOLID,
+            borderwidth=1,
+            padx=7,
+            pady=5,
+        )
+        label.pack()
+        self.window.update_idletasks()
+        x = min(
+            self.widget.winfo_pointerx() + 12,
+            self.widget.winfo_screenwidth() - self.window.winfo_reqwidth() - 4,
+        )
+        y = min(
+            self.widget.winfo_pointery() + 18,
+            self.widget.winfo_screenheight() - self.window.winfo_reqheight() - 4,
+        )
+        self.window.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def _hide(self, _event: tk.Event | None = None) -> None:
+        self._cancel()
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
+
+
+def add_tooltip(widget: tk.Widget, key: str) -> tk.Widget:
+    ToolTip(widget, TOOLTIPS[key])
+    return widget
 
 
 @dataclass
@@ -1375,7 +1539,9 @@ class FitApp:
         run_frame.pack(fill=tk.X)
         self._add_accent_strip(run_frame, UI_COLORS["setup"])
 
-        ttk.Label(run_frame, text="Scattering model").grid(row=0, column=0, sticky="w")
+        add_tooltip(ttk.Label(run_frame, text="Scattering model"), "scattering_model").grid(
+            row=0, column=0, sticky="w"
+        )
         self.model_combo = ttk.Combobox(
             run_frame,
             textvariable=self.model_var,
@@ -1384,36 +1550,44 @@ class FitApp:
             width=14,
         )
         self.model_combo.grid(row=0, column=1, sticky="ew", padx=(4, 8), pady=2)
+        add_tooltip(self.model_combo, "scattering_model")
 
-        ttk.Label(run_frame, text="Sample configuration").grid(
-            row=0, column=2, sticky="w"
-        )
+        add_tooltip(
+            ttk.Label(run_frame, text="Sample configuration"), "sample_configuration"
+        ).grid(row=0, column=2, sticky="w")
         sample_configuration = ttk.Frame(run_frame, style="Panel.TFrame")
         sample_configuration.grid(row=0, column=3, sticky="ew", pady=2)
-        ttk.Radiobutton(
-            sample_configuration,
-            text="Film",
-            variable=self.stack_enabled_var,
-            value=False,
-        ).pack(side=tk.LEFT)
-        ttk.Radiobutton(
-            sample_configuration,
-            text="Superlattice",
-            variable=self.stack_enabled_var,
-            value=True,
-        ).pack(side=tk.LEFT, padx=(8, 0))
+        for text, value in (("Film", False), ("Superlattice", True)):
+            add_tooltip(
+                ttk.Radiobutton(
+                    sample_configuration,
+                    text=text,
+                    variable=self.stack_enabled_var,
+                    value=value,
+                ),
+                "sample_configuration",
+            ).pack(side=tk.LEFT, padx=(8, 0) if value else 0)
 
-        ttk.Label(run_frame, text="X-ray wavelength (\u00c5)").grid(row=1, column=0, sticky="w")
-        ttk.Entry(run_frame, textvariable=self.wavelength_var, width=10).grid(
+        add_tooltip(ttk.Label(run_frame, text="X-ray wavelength (\u00c5)"), "wavelength").grid(
+            row=1, column=0, sticky="w"
+        )
+        add_tooltip(
+            ttk.Entry(run_frame, textvariable=self.wavelength_var, width=10), "wavelength"
+        ).grid(
             row=1, column=1, sticky="ew", padx=(4, 8), pady=2
         )
-        ttk.Label(run_frame, text="Horizontal axis").grid(row=1, column=2, sticky="w")
-        ttk.Combobox(
-            run_frame,
-            textvariable=self.axis_var,
-            values=("2\u03b8", "q"),
-            state="readonly",
-            width=10,
+        add_tooltip(ttk.Label(run_frame, text="Horizontal axis"), "horizontal_axis").grid(
+            row=1, column=2, sticky="w"
+        )
+        add_tooltip(
+            ttk.Combobox(
+                run_frame,
+                textvariable=self.axis_var,
+                values=("2\u03b8", "q"),
+                state="readonly",
+                width=10,
+            ),
+            "horizontal_axis",
         ).grid(row=1, column=3, sticky="ew", padx=(4, 8), pady=2)
 
         run_controls = [
@@ -1509,12 +1683,14 @@ class FitApp:
         self.strain_checkbutton.grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(4, 0)
         )
+        add_tooltip(self.strain_checkbutton, "include_strain")
         self.roughness_checkbutton = ttk.Checkbutton(
             film_setup_frame, text="Include roughness", variable=self.roughness_var
         )
         self.roughness_checkbutton.grid(
             row=1, column=2, columnspan=2, sticky="w", pady=(4, 0)
         )
+        add_tooltip(self.roughness_checkbutton, "include_roughness")
         film_setup_frame.columnconfigure(1, weight=1)
         parameter_tabs = self.film_parameter_tabs = ttk.Notebook(self.film_container)
         parameter_tabs.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 4))
@@ -1533,8 +1709,8 @@ class FitApp:
         ttk.Label(self.kinematic_frame, text="Max").grid(row=0, column=4, sticky="ew")
         ttk.Label(self.kinematic_frame, text="Range").grid(row=0, column=5, sticky="ew")
         kinematic_controls = [
-            ("Plane spacing d (\u00c5)", self.kin_d_fit_enabled_var, self.kin_d_start_var, self.kin_d_min_var, self.kin_d_max_var, self.kin_d_fit_var),
-            ("Number of planes", self.kin_planes_fit_enabled_var, self.kin_planes_start_var, self.kin_planes_min_var, self.kin_planes_max_var, self.kin_planes_fit_var),
+            ("Plane spacing d (\u00c5)", self.kin_d_fit_enabled_var, self.kin_d_start_var, self.kin_d_min_var, self.kin_d_max_var, self.kin_d_fit_var, "plane_spacing"),
+            ("Number of planes", self.kin_planes_fit_enabled_var, self.kin_planes_start_var, self.kin_planes_min_var, self.kin_planes_max_var, self.kin_planes_fit_var, "number_of_planes"),
             (
                 "Resolution (deg)",
                 self.kin_resolution_fit_enabled_var,
@@ -1542,20 +1718,23 @@ class FitApp:
                 self.kin_resolution_min_var,
                 self.kin_resolution_max_var,
                 self.kin_resolution_fit_var,
+                "resolution",
             ),
-            ("Intensity scale", self.kin_scale_fit_enabled_var, self.kin_scale_start_var, self.kin_scale_min_var, self.kin_scale_max_var, self.kin_scale_fit_var),
-            ("Background slope (a)", self.kin_bkg_a_fit_enabled_var, self.kin_bkg_a_start_var, self.kin_bkg_a_min_var, self.kin_bkg_a_max_var, self.kin_bkg_a_fit_var),
-            ("Background offset (b)", self.kin_bkg_b_fit_enabled_var, self.kin_bkg_b_start_var, self.kin_bkg_b_min_var, self.kin_bkg_b_max_var, self.kin_bkg_b_fit_var),
-            ("Background curvature (c)", self.kin_bkg_c_fit_enabled_var, self.kin_bkg_c_start_var, self.kin_bkg_c_min_var, self.kin_bkg_c_max_var, self.kin_bkg_c_fit_var),
+            ("Intensity scale", self.kin_scale_fit_enabled_var, self.kin_scale_start_var, self.kin_scale_min_var, self.kin_scale_max_var, self.kin_scale_fit_var, "intensity_scale"),
+            ("Background slope (a)", self.kin_bkg_a_fit_enabled_var, self.kin_bkg_a_start_var, self.kin_bkg_a_min_var, self.kin_bkg_a_max_var, self.kin_bkg_a_fit_var, "background_a"),
+            ("Background offset (b)", self.kin_bkg_b_fit_enabled_var, self.kin_bkg_b_start_var, self.kin_bkg_b_min_var, self.kin_bkg_b_max_var, self.kin_bkg_b_fit_var, "background_b"),
+            ("Background curvature (c)", self.kin_bkg_c_fit_enabled_var, self.kin_bkg_c_start_var, self.kin_bkg_c_min_var, self.kin_bkg_c_max_var, self.kin_bkg_c_fit_var, "background_c"),
         ]
-        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(kinematic_controls, start=1):
-            ttk.Label(self.kinematic_frame, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Checkbutton(self.kinematic_frame, variable=fit_enabled_var).grid(row=row, column=1, sticky="ew")
+        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var, tooltip_key) in enumerate(kinematic_controls, start=1):
+            add_tooltip(ttk.Label(self.kinematic_frame, text=label), tooltip_key).grid(row=row, column=0, sticky="w")
+            add_tooltip(ttk.Checkbutton(self.kinematic_frame, variable=fit_enabled_var), "fit").grid(row=row, column=1, sticky="ew")
             ttk.Entry(self.kinematic_frame, textvariable=start_var, width=7).grid(row=row, column=2, sticky="ew")
             ttk.Entry(self.kinematic_frame, textvariable=min_var, width=7).grid(row=row, column=3, sticky="ew")
             ttk.Entry(self.kinematic_frame, textvariable=max_var, width=7).grid(row=row, column=4, sticky="ew")
             self._add_range_indicator(self.kinematic_frame, row, label, start_var, min_var, max_var, fit_var, fit_enabled_var)
-        ttk.Label(self.kinematic_frame, text="Debye-Waller coefficient").grid(row=7, column=0, sticky="w")
+        add_tooltip(
+            ttk.Label(self.kinematic_frame, text="Debye-Waller coefficient"), "debye_waller"
+        ).grid(row=7, column=0, sticky="w")
         ttk.Entry(self.kinematic_frame, textvariable=self.kin_debye_var, width=7).grid(
             row=7, column=2, columnspan=3, sticky="ew"
         )
@@ -1569,10 +1748,13 @@ class FitApp:
         )
         kinematic_tabs.add(self.kinematic_substrate_frame, text="Substrate")
         self._add_accent_strip(self.kinematic_substrate_frame, UI_COLORS["substrate"])
-        ttk.Checkbutton(
-            self.kinematic_substrate_frame,
-            text="Include substrate peak",
-            variable=self.kin_substrate_var,
+        add_tooltip(
+            ttk.Checkbutton(
+                self.kinematic_substrate_frame,
+                text="Include substrate peak",
+                variable=self.kin_substrate_var,
+            ),
+            "include_substrate_peak",
         ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 6))
         self.kinematic_substrate_controls_frame = ttk.Frame(
             self.kinematic_substrate_frame, style="Panel.TFrame"
@@ -1603,6 +1785,7 @@ class FitApp:
                 self.kin_substrate_intensity_min_var,
                 self.kin_substrate_intensity_max_var,
                 self.kin_substrate_intensity_fit_var,
+                "substrate_intensity",
             ),
             (
                 "FWHM (deg)",
@@ -1611,6 +1794,7 @@ class FitApp:
                 self.kin_substrate_width_min_var,
                 self.kin_substrate_width_max_var,
                 self.kin_substrate_width_fit_var,
+                "substrate_fwhm",
             ),
             (
                 "d spacing (Å)",
@@ -1619,16 +1803,18 @@ class FitApp:
                 self.kin_substrate_d_min_var,
                 self.kin_substrate_d_max_var,
                 self.kin_substrate_d_fit_var,
+                "substrate_d_spacing",
             ),
         ]
-        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(
+        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var, tooltip_key) in enumerate(
             substrate_peak_controls, start=1
         ):
-            ttk.Label(self.kinematic_substrate_controls_frame, text=label).grid(
+            add_tooltip(ttk.Label(self.kinematic_substrate_controls_frame, text=label), tooltip_key).grid(
                 row=row, column=0, sticky="w"
             )
-            ttk.Checkbutton(
-                self.kinematic_substrate_controls_frame, variable=fit_enabled_var
+            add_tooltip(
+                ttk.Checkbutton(self.kinematic_substrate_controls_frame, variable=fit_enabled_var),
+                "fit",
             ).grid(row=row, column=1, sticky="ew")
             ttk.Entry(
                 self.kinematic_substrate_controls_frame, textvariable=start_var, width=7
@@ -1661,21 +1847,31 @@ class FitApp:
         self.dynamic_film_frame = ttk.Frame(dynamic_tabs, padding=8, style="Panel.TFrame")
         dynamic_tabs.add(self.dynamic_film_frame, text="Film")
         self._add_accent_strip(self.dynamic_film_frame, UI_COLORS["film"])
-        ttk.Label(self.dynamic_film_frame, text="Structure file").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(
-            self.dynamic_film_frame,
-            textvariable=self.film_filename_var,
-            values=POSCAR_FILES,
-            state="readonly",
-            width=18,
+        add_tooltip(
+            ttk.Label(self.dynamic_film_frame, text="Structure file"), "structure_file"
+        ).grid(row=0, column=0, sticky="w")
+        add_tooltip(
+            ttk.Combobox(
+                self.dynamic_film_frame,
+                textvariable=self.film_filename_var,
+                values=POSCAR_FILES,
+                state="readonly",
+                width=18,
+            ),
+            "structure_file",
         ).grid(row=0, column=2, columnspan=3, sticky="ew")
-        ttk.Label(self.dynamic_film_frame, text="Layer direction").grid(row=1, column=0, sticky="w")
-        ttk.Combobox(
-            self.dynamic_film_frame,
-            textvariable=self.film_direction_var,
-            values=("1", "2", "3"),
-            state="readonly",
-            width=6,
+        add_tooltip(
+            ttk.Label(self.dynamic_film_frame, text="Layer direction"), "layer_direction"
+        ).grid(row=1, column=0, sticky="w")
+        add_tooltip(
+            ttk.Combobox(
+                self.dynamic_film_frame,
+                textvariable=self.film_direction_var,
+                values=("1", "2", "3"),
+                state="readonly",
+                width=6,
+            ),
+            "layer_direction",
         ).grid(row=1, column=2, sticky="w")
         ttk.Label(self.dynamic_film_frame, text="Fit").grid(row=2, column=1, sticky="ew")
         ttk.Label(self.dynamic_film_frame, text="Value").grid(row=2, column=2, sticky="ew")
@@ -1683,9 +1879,9 @@ class FitApp:
         ttk.Label(self.dynamic_film_frame, text="Max").grid(row=2, column=4, sticky="ew")
         ttk.Label(self.dynamic_film_frame, text="Range").grid(row=2, column=5, sticky="ew")
         film_controls = [
-            ("Number of layers", self.film_n_fit_enabled_var, self.film_n_start_var, self.film_n_min_var, self.film_n_max_var, self.film_n_fit_var),
-            ("Lattice scale", self.film_scale_fit_enabled_var, self.film_scale_start_var, self.film_scale_min_var, self.film_scale_max_var, self.film_scale_fit_var),
-            ("Area scale", self.film_area_fit_enabled_var, self.film_area_start_var, self.film_area_min_var, self.film_area_max_var, self.film_area_fit_var),
+            ("Number of layers", self.film_n_fit_enabled_var, self.film_n_start_var, self.film_n_min_var, self.film_n_max_var, self.film_n_fit_var, "number_of_layers"),
+            ("Lattice scale", self.film_scale_fit_enabled_var, self.film_scale_start_var, self.film_scale_min_var, self.film_scale_max_var, self.film_scale_fit_var, "lattice_scale"),
+            ("Area scale", self.film_area_fit_enabled_var, self.film_area_start_var, self.film_area_min_var, self.film_area_max_var, self.film_area_fit_var, "area_scale"),
             (
                 "Interface spacing (\u00c5)",
                 self.film_interface_fit_enabled_var,
@@ -1693,11 +1889,12 @@ class FitApp:
                 self.film_interface_min_var,
                 self.film_interface_max_var,
                 self.film_interface_fit_var,
+                "interface_spacing",
             ),
         ]
-        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(film_controls, start=3):
-            ttk.Label(self.dynamic_film_frame, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Checkbutton(self.dynamic_film_frame, variable=fit_enabled_var).grid(row=row, column=1, sticky="ew")
+        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var, tooltip_key) in enumerate(film_controls, start=3):
+            add_tooltip(ttk.Label(self.dynamic_film_frame, text=label), tooltip_key).grid(row=row, column=0, sticky="w")
+            add_tooltip(ttk.Checkbutton(self.dynamic_film_frame, variable=fit_enabled_var), "fit").grid(row=row, column=1, sticky="ew")
             ttk.Entry(self.dynamic_film_frame, textvariable=start_var, width=7).grid(row=row, column=2, sticky="ew")
             ttk.Entry(self.dynamic_film_frame, textvariable=min_var, width=7).grid(row=row, column=3, sticky="ew")
             ttk.Entry(self.dynamic_film_frame, textvariable=max_var, width=7).grid(row=row, column=4, sticky="ew")
@@ -1710,17 +1907,23 @@ class FitApp:
         self.dynamic_fit_frame = ttk.Frame(dynamic_tabs, padding=8, style="Panel.TFrame")
         dynamic_tabs.add(self.dynamic_fit_frame, text="Calculation and fit")
         self._add_accent_strip(self.dynamic_fit_frame, UI_COLORS["fit"])
-        ttk.Label(self.dynamic_fit_frame, text="Density slices per cell").grid(
+        add_tooltip(
+            ttk.Label(self.dynamic_fit_frame, text="Density slices per cell"), "density_slices"
+        ).grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Entry(
-            self.dynamic_fit_frame, textvariable=self.density_slices_var, width=10
+        add_tooltip(
+            ttk.Entry(self.dynamic_fit_frame, textvariable=self.density_slices_var, width=10),
+            "density_slices",
         ).grid(row=0, column=2, sticky="w")
-        ttk.Label(self.dynamic_fit_frame, text="Density Q max (1/Å)").grid(
+        add_tooltip(
+            ttk.Label(self.dynamic_fit_frame, text="Density Q max (1/Å)"), "density_q_max"
+        ).grid(
             row=1, column=0, sticky="w"
         )
-        ttk.Entry(
-            self.dynamic_fit_frame, textvariable=self.density_max_q0_var, width=10
+        add_tooltip(
+            ttk.Entry(self.dynamic_fit_frame, textvariable=self.density_max_q0_var, width=10),
+            "density_q_max",
         ).grid(row=1, column=2, sticky="w")
         ttk.Label(self.dynamic_fit_frame, text="Fit").grid(row=2, column=1, sticky="ew")
         ttk.Label(self.dynamic_fit_frame, text="Value").grid(row=2, column=2, sticky="ew")
@@ -1735,6 +1938,7 @@ class FitApp:
                 self.dynamic_resolution_min_var,
                 self.dynamic_resolution_max_var,
                 self.dynamic_resolution_fit_var,
+                "resolution",
             ),
             (
                 "Intensity scale",
@@ -1743,6 +1947,7 @@ class FitApp:
                 self.dynamic_intensity_min_var,
                 self.dynamic_intensity_max_var,
                 self.dynamic_intensity_fit_var,
+                "intensity_scale",
             ),
             (
                 "Background slope (a)",
@@ -1751,6 +1956,7 @@ class FitApp:
                 self.dynamic_bkg_a_min_var,
                 self.dynamic_bkg_a_max_var,
                 self.dynamic_bkg_a_fit_var,
+                "background_a",
             ),
             (
                 "Background offset (b)",
@@ -1759,6 +1965,7 @@ class FitApp:
                 self.dynamic_bkg_b_min_var,
                 self.dynamic_bkg_b_max_var,
                 self.dynamic_bkg_b_fit_var,
+                "background_b",
             ),
             (
                 "Background curvature (c)",
@@ -1767,11 +1974,12 @@ class FitApp:
                 self.dynamic_bkg_c_min_var,
                 self.dynamic_bkg_c_max_var,
                 self.dynamic_bkg_c_fit_var,
+                "background_c",
             ),
         ]
-        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(dynamic_fit_controls, start=3):
-            ttk.Label(self.dynamic_fit_frame, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Checkbutton(self.dynamic_fit_frame, variable=fit_enabled_var).grid(row=row, column=1, sticky="ew")
+        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var, tooltip_key) in enumerate(dynamic_fit_controls, start=3):
+            add_tooltip(ttk.Label(self.dynamic_fit_frame, text=label), tooltip_key).grid(row=row, column=0, sticky="w")
+            add_tooltip(ttk.Checkbutton(self.dynamic_fit_frame, variable=fit_enabled_var), "fit").grid(row=row, column=1, sticky="ew")
             ttk.Entry(self.dynamic_fit_frame, textvariable=start_var, width=7).grid(row=row, column=2, sticky="ew")
             ttk.Entry(self.dynamic_fit_frame, textvariable=min_var, width=7).grid(row=row, column=3, sticky="ew")
             ttk.Entry(self.dynamic_fit_frame, textvariable=max_var, width=7).grid(row=row, column=4, sticky="ew")
@@ -1784,41 +1992,57 @@ class FitApp:
         self.dynamic_substrate_frame = ttk.Frame(dynamic_tabs, padding=8, style="Panel.TFrame")
         dynamic_tabs.add(self.dynamic_substrate_frame, text="Substrate")
         self._add_accent_strip(self.dynamic_substrate_frame, UI_COLORS["substrate"])
-        ttk.Label(self.dynamic_substrate_frame, text="Structure file").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(
-            self.dynamic_substrate_frame,
-            textvariable=self.substrate_filename_var,
-            values=POSCAR_FILES,
-            state="readonly",
-            width=18,
+        add_tooltip(
+            ttk.Label(self.dynamic_substrate_frame, text="Structure file"), "structure_file"
+        ).grid(row=0, column=0, sticky="w")
+        add_tooltip(
+            ttk.Combobox(
+                self.dynamic_substrate_frame,
+                textvariable=self.substrate_filename_var,
+                values=POSCAR_FILES,
+                state="readonly",
+                width=18,
+            ),
+            "structure_file",
         ).grid(row=0, column=1, sticky="ew")
         substrate_controls = [
-            ("Layer direction", self.substrate_direction_var, ("1", "2", "3")),
-            ("Number of layers", self.substrate_n_var, None),
-            ("Interface spacing (\u00c5)", self.substrate_interface_var, None),
-            ("Area scale", self.substrate_area_var, None),
+            ("Layer direction", self.substrate_direction_var, ("1", "2", "3"), "layer_direction"),
+            ("Number of layers", self.substrate_n_var, None, "substrate_layers"),
+            ("Interface spacing (\u00c5)", self.substrate_interface_var, None, "interface_spacing"),
+            ("Area scale", self.substrate_area_var, None, "area_scale"),
         ]
-        for row, (label, var, values) in enumerate(substrate_controls, start=1):
-            ttk.Label(self.dynamic_substrate_frame, text=label).grid(row=row, column=0, sticky="w")
+        for row, (label, var, values, tooltip_key) in enumerate(substrate_controls, start=1):
+            add_tooltip(ttk.Label(self.dynamic_substrate_frame, text=label), tooltip_key).grid(row=row, column=0, sticky="w")
             if values is None:
-                ttk.Entry(self.dynamic_substrate_frame, textvariable=var, width=12).grid(row=row, column=1, sticky="ew")
+                add_tooltip(
+                    ttk.Entry(self.dynamic_substrate_frame, textvariable=var, width=12),
+                    tooltip_key,
+                ).grid(row=row, column=1, sticky="ew")
             else:
-                ttk.Combobox(
-                    self.dynamic_substrate_frame,
-                    textvariable=var,
-                    values=values,
-                    state="readonly",
-                    width=8,
+                add_tooltip(
+                    ttk.Combobox(
+                        self.dynamic_substrate_frame,
+                        textvariable=var,
+                        values=values,
+                        state="readonly",
+                        width=8,
+                    ),
+                    tooltip_key,
                 ).grid(row=row, column=1, sticky="w")
         ttk.Label(self.dynamic_substrate_frame, text="Fit").grid(row=5, column=1, sticky="ew")
         ttk.Label(self.dynamic_substrate_frame, text="Value").grid(row=5, column=2, sticky="ew")
         ttk.Label(self.dynamic_substrate_frame, text="Min").grid(row=5, column=3, sticky="ew")
         ttk.Label(self.dynamic_substrate_frame, text="Max").grid(row=5, column=4, sticky="ew")
         ttk.Label(self.dynamic_substrate_frame, text="Range").grid(row=5, column=5, sticky="ew")
-        ttk.Label(self.dynamic_substrate_frame, text="Lattice scale").grid(row=6, column=0, sticky="w")
-        ttk.Checkbutton(
-            self.dynamic_substrate_frame,
-            variable=self.substrate_scale_fit_enabled_var,
+        add_tooltip(
+            ttk.Label(self.dynamic_substrate_frame, text="Lattice scale"), "lattice_scale"
+        ).grid(row=6, column=0, sticky="w")
+        add_tooltip(
+            ttk.Checkbutton(
+                self.dynamic_substrate_frame,
+                variable=self.substrate_scale_fit_enabled_var,
+            ),
+            "fit",
         ).grid(row=6, column=1, sticky="ew")
         ttk.Entry(self.dynamic_substrate_frame, textvariable=self.substrate_scale_var, width=7).grid(
             row=6, column=2, sticky="ew"
@@ -1862,7 +2086,13 @@ class FitApp:
             "Top strain amplitude",
             self.top_extent_label_var,
         ]
-        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(
+        strain_tooltips = (
+            "bottom_strain_amplitude",
+            "bottom_strain_extent",
+            "top_strain_amplitude",
+            "top_strain_extent",
+        )
+        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var, tooltip_key) in enumerate(
             zip(
                 strain_controls,
                 self.strain_fit_enabled_vars,
@@ -1870,15 +2100,17 @@ class FitApp:
                 self.strain_min_vars,
                 self.strain_max_vars,
                 self.strain_fit_vars,
+                strain_tooltips,
             ),
             start=1,
         ):
             name = label.get() if isinstance(label, tk.StringVar) else label
             if isinstance(label, tk.StringVar):
-                ttk.Label(self.strain_frame, textvariable=label).grid(row=row, column=0, sticky="w")
+                label_widget = ttk.Label(self.strain_frame, textvariable=label)
             else:
-                ttk.Label(self.strain_frame, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Checkbutton(self.strain_frame, variable=fit_enabled_var).grid(row=row, column=1, sticky="ew")
+                label_widget = ttk.Label(self.strain_frame, text=label)
+            add_tooltip(label_widget, tooltip_key).grid(row=row, column=0, sticky="w")
+            add_tooltip(ttk.Checkbutton(self.strain_frame, variable=fit_enabled_var), "fit").grid(row=row, column=1, sticky="ew")
             ttk.Entry(self.strain_frame, textvariable=start_var, width=7).grid(row=row, column=2, sticky="ew")
             ttk.Entry(self.strain_frame, textvariable=min_var, width=7).grid(row=row, column=3, sticky="ew")
             ttk.Entry(self.strain_frame, textvariable=max_var, width=7).grid(row=row, column=4, sticky="ew")
@@ -1912,6 +2144,7 @@ class FitApp:
                 self.film_rough_min_var,
                 self.film_rough_max_var,
                 self.film_rough_fit_var,
+                "film_roughness",
             ),
             (
                 "Substrate/interface roughness \u03c3 (\u00c5)",
@@ -1920,11 +2153,12 @@ class FitApp:
                 self.substrate_rough_min_var,
                 self.substrate_rough_max_var,
                 self.substrate_rough_fit_var,
+                "substrate_roughness",
             ),
         ]
-        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(rough_controls, start=1):
-            ttk.Label(rough_frame, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Checkbutton(rough_frame, variable=fit_enabled_var).grid(row=row, column=1, sticky="ew")
+        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var, tooltip_key) in enumerate(rough_controls, start=1):
+            add_tooltip(ttk.Label(rough_frame, text=label), tooltip_key).grid(row=row, column=0, sticky="w")
+            add_tooltip(ttk.Checkbutton(rough_frame, variable=fit_enabled_var), "fit").grid(row=row, column=1, sticky="ew")
             ttk.Entry(rough_frame, textvariable=start_var, width=7).grid(row=row, column=2, sticky="ew")
             ttk.Entry(rough_frame, textvariable=min_var, width=7).grid(row=row, column=3, sticky="ew")
             ttk.Entry(rough_frame, textvariable=max_var, width=7).grid(row=row, column=4, sticky="ew")
@@ -1938,12 +2172,12 @@ class FitApp:
         parameter_tabs.add(optimization_frame, text="Optimization settings")
         self._add_accent_strip(optimization_frame, UI_COLORS["fit"])
         optimization_controls = [
-            ("Seed", self.seed_var, 0, 0),
-            ("Progress update interval", self.interval_var, 0, 2),
-            ("DE max iterations", self.maxiter_var, 1, 0),
-            ("DE population size", self.popsize_var, 1, 2),
-            ("Local max evaluations", self.local_var, 2, 0),
-            ("Polish iterations", self.polish_var, 2, 2),
+            ("Seed", self.seed_var, 0, 0, "seed"),
+            ("Progress update interval", self.interval_var, 0, 2, "progress_interval"),
+            ("DE max iterations", self.maxiter_var, 1, 0, "de_iterations"),
+            ("DE population size", self.popsize_var, 1, 2, "de_population"),
+            ("Local max evaluations", self.local_var, 2, 0, "local_evaluations"),
+            ("Polish iterations", self.polish_var, 2, 2, "polish_iterations"),
         ]
 
         def add_optimization_control(
@@ -1952,8 +2186,11 @@ class FitApp:
             variable: tk.StringVar,
             row: int,
             column: int,
+            tooltip_key: str,
         ) -> None:
-            ttk.Label(parent, text=label).grid(row=row, column=column, sticky="w")
+            add_tooltip(ttk.Label(parent, text=label), tooltip_key).grid(
+                row=row, column=column, sticky="w"
+            )
             if variable is self.seed_var:
                 editor = ttk.Frame(parent, style="Panel.TFrame")
                 editor.grid(
@@ -1963,16 +2200,23 @@ class FitApp:
                     padx=(4, 8),
                     pady=2,
                 )
-                ttk.Entry(editor, textvariable=variable, width=10).pack(
+                add_tooltip(
+                    ttk.Entry(editor, textvariable=variable, width=10), tooltip_key
+                ).pack(
                     side=tk.LEFT, fill=tk.X, expand=True
                 )
-                ttk.Button(
-                    editor,
-                    text="New seed",
-                    command=self._generate_optimizer_seed,
+                add_tooltip(
+                    ttk.Button(
+                        editor,
+                        text="New seed",
+                        command=self._generate_optimizer_seed,
+                    ),
+                    "new_seed",
                 ).pack(side=tk.LEFT, padx=(4, 0))
             else:
-                ttk.Entry(parent, textvariable=variable, width=10).grid(
+                add_tooltip(
+                    ttk.Entry(parent, textvariable=variable, width=10), tooltip_key
+                ).grid(
                     row=row,
                     column=column + 1,
                     sticky="ew",
@@ -1980,8 +2224,10 @@ class FitApp:
                     pady=2,
                 )
 
-        for label, var, row, column in optimization_controls:
-            add_optimization_control(optimization_frame, label, var, row, column)
+        for label, var, row, column, tooltip_key in optimization_controls:
+            add_optimization_control(
+                optimization_frame, label, var, row, column, tooltip_key
+            )
         optimization_frame.columnconfigure(1, weight=1)
         optimization_frame.columnconfigure(3, weight=1)
 
@@ -2027,19 +2273,27 @@ class FitApp:
         ttk.Entry(stack_structure_panel, textvariable=self.stack_name_var).grid(
             row=3, column=1, columnspan=2, sticky="ew", padx=(4, 8), pady=2
         )
-        ttk.Label(stack_structure_panel, text="Repetitions").grid(row=3, column=3, sticky="e")
-        ttk.Spinbox(
-            stack_structure_panel,
-            textvariable=self.stack_repetitions_var,
-            from_=1,
-            to=10000,
-            width=6,
+        add_tooltip(
+            ttk.Label(stack_structure_panel, text="Repetitions"), "repetitions"
+        ).grid(row=3, column=3, sticky="e")
+        add_tooltip(
+            ttk.Spinbox(
+                stack_structure_panel,
+                textvariable=self.stack_repetitions_var,
+                from_=1,
+                to=10000,
+                width=6,
+            ),
+            "repetitions",
         ).grid(row=3, column=4, sticky="ew", padx=(4, 0), pady=2)
-        ttk.Checkbutton(
-            stack_structure_panel,
-            text="Include capping layer",
-            variable=self.stack_capping_enabled_var,
-            command=self._on_stack_capping_changed,
+        add_tooltip(
+            ttk.Checkbutton(
+                stack_structure_panel,
+                text="Include capping layer",
+                variable=self.stack_capping_enabled_var,
+                command=self._on_stack_capping_changed,
+            ),
+            "capping_layer",
         ).grid(row=4, column=1, columnspan=3, sticky="w", padx=(4, 0), pady=2)
         stack_layers_scroller = ttk.Frame(stack_structure_panel, style="Panel.TFrame")
         stack_layers_scroller.grid(
@@ -2145,6 +2399,7 @@ class FitApp:
             value_var: tk.StringVar,
             min_var: tk.StringVar,
             max_var: tk.StringVar,
+            tooltip_key: str,
         ) -> tuple[list[tk.Widget], tuple[ttk.Entry, ttk.Entry, ttk.Entry], RangeIndicator]:
             label_widget = ttk.Label(
                 stack_calculation_panel,
@@ -2152,11 +2407,13 @@ class FitApp:
                 text="" if isinstance(label, tk.StringVar) else label,
             )
             label_widget.grid(row=row, column=0, sticky="w", pady=2)
+            add_tooltip(label_widget, tooltip_key)
             fit_checkbutton = ttk.Checkbutton(
                 stack_calculation_panel,
                 variable=self.stack_calculation_fit_enabled_vars[key],
             )
             fit_checkbutton.grid(row=row, column=1, sticky="ew", pady=2)
+            add_tooltip(fit_checkbutton, "fit")
             entries = tuple(
                 ttk.Entry(stack_calculation_panel, textvariable=variable, width=9)
                 for variable in (value_var, min_var, max_var)
@@ -2176,13 +2433,17 @@ class FitApp:
             indicator = self.range_indicators[-1]
             return [label_widget, fit_checkbutton, *entries, indicator.canvas], entries, indicator
 
-        ttk.Label(
-            stack_calculation_panel, textvariable=self.stack_sampling_label_var
+        add_tooltip(
+            ttk.Label(stack_calculation_panel, textvariable=self.stack_sampling_label_var),
+            "points_per_unit",
         ).grid(row=1, column=0, sticky="w", pady=2)
-        ttk.Entry(
-            stack_calculation_panel,
-            textvariable=self.stack_points_per_unit_var,
-            width=9,
+        add_tooltip(
+            ttk.Entry(
+                stack_calculation_panel,
+                textvariable=self.stack_points_per_unit_var,
+                width=9,
+            ),
+            "points_per_unit",
         ).grid(row=1, column=2, sticky="ew", padx=(4, 0), pady=2)
 
         self.stack_calculation_entries: list[ttk.Entry] = []
@@ -2190,11 +2451,11 @@ class FitApp:
         self.stack_calculation_max_entries: list[ttk.Entry] = []
         self.stack_model_calculation_indicators: list[RangeIndicator] = []
         dynamic_rows = (
-            ("resolution", "Resolution (deg)", self.dynamic_resolution_start_var, self.dynamic_resolution_min_var, self.dynamic_resolution_max_var),
-            ("intensity_scale", "Intensity scale", self.dynamic_intensity_start_var, self.dynamic_intensity_min_var, self.dynamic_intensity_max_var),
-            ("background_a", "Background slope (a)", self.dynamic_bkg_a_start_var, self.dynamic_bkg_a_min_var, self.dynamic_bkg_a_max_var),
-            ("background_b", "Background offset (b)", self.dynamic_bkg_b_start_var, self.dynamic_bkg_b_min_var, self.dynamic_bkg_b_max_var),
-            ("background_c", "Background curvature (c)", self.dynamic_bkg_c_start_var, self.dynamic_bkg_c_min_var, self.dynamic_bkg_c_max_var),
+            ("resolution", "Resolution (deg)", self.dynamic_resolution_start_var, self.dynamic_resolution_min_var, self.dynamic_resolution_max_var, "resolution"),
+            ("intensity_scale", "Intensity scale", self.dynamic_intensity_start_var, self.dynamic_intensity_min_var, self.dynamic_intensity_max_var, "intensity_scale"),
+            ("background_a", "Background slope (a)", self.dynamic_bkg_a_start_var, self.dynamic_bkg_a_min_var, self.dynamic_bkg_a_max_var, "background_a"),
+            ("background_b", "Background offset (b)", self.dynamic_bkg_b_start_var, self.dynamic_bkg_b_min_var, self.dynamic_bkg_b_max_var, "background_b"),
+            ("background_c", "Background curvature (c)", self.dynamic_bkg_c_start_var, self.dynamic_bkg_c_min_var, self.dynamic_bkg_c_max_var, "background_c"),
         )
         for row, values in enumerate(dynamic_rows, start=2):
             _widgets, entries, indicator = add_stack_calculation_row(row, *values)
@@ -2212,6 +2473,9 @@ class FitApp:
             label_widget.grid(row=row, column=0, sticky="w", pady=2)
             entry = ttk.Entry(stack_calculation_panel, textvariable=variable, width=9)
             entry.grid(row=row, column=2, sticky="ew", padx=(4, 0), pady=2)
+            tooltip_key = "density_slices" if variable is self.density_slices_var else "density_q_max"
+            add_tooltip(label_widget, tooltip_key)
+            add_tooltip(entry, tooltip_key)
             self.stack_dynamic_calculation_widgets.extend((label_widget, entry))
         for column in (2, 3, 4, 5):
             stack_calculation_panel.columnconfigure(column, weight=1)
@@ -2221,9 +2485,14 @@ class FitApp:
         )
         stack_tabs.add(stack_optimization_frame, text="Optimization settings")
         self._add_accent_strip(stack_optimization_frame, UI_COLORS["fit"])
-        for label, variable, row, column in optimization_controls:
+        for label, variable, row, column, tooltip_key in optimization_controls:
             add_optimization_control(
-                stack_optimization_frame, label, variable, row, column
+                stack_optimization_frame,
+                label,
+                variable,
+                row,
+                column,
+                tooltip_key,
             )
         stack_optimization_frame.columnconfigure(1, weight=1)
         stack_optimization_frame.columnconfigure(3, weight=1)
@@ -2518,41 +2787,52 @@ class FitApp:
                 width=8,
                 state=tk.DISABLED if is_substrate else tk.NORMAL,
             ).grid(row=row, column=1, sticky="ew", padx=1, pady=1)
-            ttk.Combobox(
+            structure_combo = ttk.Combobox(
                 self.stack_layers_frame,
                 textvariable=variables["filename"],
                 values=POSCAR_FILES,
                 state="readonly",
                 width=18,
-            ).grid(row=row, column=2, sticky="ew", padx=1, pady=1)
-            ttk.Combobox(
+            )
+            structure_combo.grid(row=row, column=2, sticky="ew", padx=1, pady=1)
+            add_tooltip(structure_combo, "layer_structure")
+            direction_combo = ttk.Combobox(
                 self.stack_layers_frame,
                 textvariable=variables["direction"],
                 values=("1", "2", "3"),
                 state="readonly",
                 width=4,
-            ).grid(row=row, column=3, sticky="ew", padx=1, pady=1)
-            ttk.Entry(
+            )
+            direction_combo.grid(row=row, column=3, sticky="ew", padx=1, pady=1)
+            add_tooltip(direction_combo, "layer_direction")
+            unit_cells_entry = ttk.Entry(
                 self.stack_layers_frame,
                 textvariable=variables["unit_cells"],
                 width=8,
-            ).grid(row=row, column=4, sticky="ew", padx=1, pady=1)
+            )
+            unit_cells_entry.grid(row=row, column=4, sticky="ew", padx=1, pady=1)
+            add_tooltip(unit_cells_entry, "unit_cells")
 
-            for offset, (key, label) in enumerate(
+            for offset, (key, label, tooltip_key) in enumerate(
                 (
-                    ("dinterface", "Interface (A)"),
-                    ("scale", "Lattice scale"),
-                    ("area_scale", "Area scale"),
+                    ("dinterface", "Interface (A)", "interface_spacing"),
+                    ("scale", "Lattice scale", "lattice_scale"),
+                    ("area_scale", "Area scale", "area_scale"),
                 ),
                 start=1,
             ):
                 parameter_row = row + offset
-                ttk.Label(self.stack_layers_frame, text=label).grid(
+                add_tooltip(
+                    ttk.Label(self.stack_layers_frame, text=label), tooltip_key
+                ).grid(
                     row=parameter_row, column=1, sticky="w", padx=1, pady=1
                 )
-                ttk.Checkbutton(
-                    self.stack_layers_frame,
-                    variable=variables[f"{key}_fit_enabled"],
+                add_tooltip(
+                    ttk.Checkbutton(
+                        self.stack_layers_frame,
+                        variable=variables[f"{key}_fit_enabled"],
+                    ),
+                    "fit",
                 ).grid(row=parameter_row, column=2, sticky="ew", padx=1, pady=1)
                 for column, variable_key in (
                     (3, key),
@@ -2599,12 +2879,23 @@ class FitApp:
                     ).grid(
                         row=row, column=0, rowspan=4, sticky="nw", padx=1, pady=2
                     )
-                ttk.Label(self.stack_strain_frame, text=label).grid(
+                tooltip_key = {
+                    "bottom_strain_amplitude": "bottom_strain_amplitude",
+                    "bottom_strain_end": "bottom_strain_extent",
+                    "top_strain_amplitude": "top_strain_amplitude",
+                    "top_strain_end": "top_strain_extent",
+                }[key]
+                add_tooltip(
+                    ttk.Label(self.stack_strain_frame, text=label), tooltip_key
+                ).grid(
                     row=row, column=1, sticky="w", padx=1, pady=2
                 )
-                ttk.Checkbutton(
-                    self.stack_strain_frame,
-                    variable=variables[f"{key}_fit_enabled"],
+                add_tooltip(
+                    ttk.Checkbutton(
+                        self.stack_strain_frame,
+                        variable=variables[f"{key}_fit_enabled"],
+                    ),
+                    "fit",
                 ).grid(row=row, column=2, sticky="ew", padx=1, pady=2)
                 for column, variable_key in (
                     (3, key),

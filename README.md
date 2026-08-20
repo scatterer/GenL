@@ -106,6 +106,9 @@ The film-parameter notebook is divided into four groups:
 GenL initializes the optimizer seed from the operating system's random source.
 Use **New seed** to generate an independent differential-evolution population;
 the displayed seed is retained in saved setups for reproducible reruns.
+Hover over specialized scientific and optimizer controls to see a short
+description. Tooltips are intentionally omitted from the self-explanatory
+simulation buttons and **Value**, **Min**, and **Max** fields.
 
 Use **Sample configuration** in the setup panel to switch between the mutually
 exclusive film and superlattice workspaces. The superlattice workspace has

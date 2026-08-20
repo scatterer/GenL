@@ -31,6 +31,7 @@ from genl.gui import (
     FitUpdate,
     KinematicModel,
     SAMPLES,
+    ToolTip,
     _least_squares_residual,
     clipped_checkpoint_population,
     dynamic_bounds_and_start,
@@ -374,6 +375,32 @@ class CoreTests(unittest.TestCase):
         np.testing.assert_allclose(restored.predicted, update.predicted)
         np.testing.assert_allclose(restored.params, update.params)
         np.testing.assert_allclose(restored.density_rho_e, update.density_rho_e)
+
+    def test_tooltip_schedules_and_cancels_delayed_display(self):
+        class FakeWidget:
+            def __init__(self):
+                self.bindings = {}
+                self.cancelled = []
+
+            def bind(self, event, callback, add=None):
+                self.bindings[event] = (callback, add)
+
+            def after(self, delay, callback):
+                self.scheduled = (delay, callback)
+                return "tooltip-after"
+
+            def after_cancel(self, after_id):
+                self.cancelled.append(after_id)
+
+        widget = FakeWidget()
+        tooltip = ToolTip(widget, "Explanation", delay_ms=250)
+
+        self.assertEqual(widget.bindings["<Enter>"][1], "+")
+        tooltip._schedule()
+        self.assertEqual(widget.scheduled[0], 250)
+        tooltip._hide()
+        self.assertEqual(widget.cancelled, ["tooltip-after"])
+        self.assertIsNone(tooltip.after_id)
 
     def test_read_poscar_fe(self):
         structure = read_poscar("Fe_fractional.vasp", POSCAR)
