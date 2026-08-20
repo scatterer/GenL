@@ -116,7 +116,11 @@ def compare_case(name: str, twotheta: np.ndarray, stack: list[Layer]) -> bool:
         f"{name}: reflectivity={reflectivity_relative:.3e}, "
         f"log={reflectivity_log:.3e} decades, density={density_relative:.3e}"
     )
-    return reflectivity_relative <= 1e-3 and reflectivity_log <= 1e-2
+    return (
+        reflectivity_relative <= 1e-3
+        and reflectivity_log <= 1e-2
+        and density_relative <= 1e-6
+    )
 
 
 def main() -> int:
@@ -127,7 +131,8 @@ def main() -> int:
             "matlab/kinematic_and_dynamic/export_subroutines_v2_reference.m first."
         )
         return 2
-    return 0 if all(compare_case(name, *case) for name, case in cases().items()) else 1
+    results = [compare_case(name, *case) for name, case in cases().items()]
+    return 0 if all(results) else 1
 
 
 if __name__ == "__main__":

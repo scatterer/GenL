@@ -1,4 +1,4 @@
-clear;
+function export_subroutines_v2_reference
 script_dir = fileparts(mfilename('fullpath'));
 repo_dir = fullfile(script_dir, '..', '..');
 addpath(fullfile(script_dir, 'subroutines_v2'));
@@ -47,6 +47,7 @@ for k = 1:numel(cases)
         fullfile(output_dir, [current.name '_reflectivity.csv']));
     writematrix([result.z(:) real(result.rho_e(:)) imag(result.rho_e(:))], ...
         fullfile(output_dir, [current.name '_density.csv']));
+end
 end
 
 function item = make_case(name, twotheta, stack)
