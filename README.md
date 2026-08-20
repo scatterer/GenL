@@ -69,7 +69,8 @@ The Python implementation is in `src/genl/`. It provides:
 - POSCAR/VASP crystal-structure and atomic form-factor loading with
   element-specific Debye-Waller damping
 - kinematic scattering for crystalline films
-- density-based dynamic scattering for substrates and film stacks
+- density-based dynamic scattering for substrates, multilayers, and superlattices
+- versioned superlattice files for repeated crystalline layers
 - strain, film roughness, and substrate/interface roughness controls
 - Gaussian instrumental broadening, scale, and background fitting
 - Numba-accelerated reflection recursion and transfer-matrix propagation
@@ -83,6 +84,11 @@ or troubleshooting calculations:
 - `fused`: Numba transfer-matrix propagation
 - `legacy`: NumPy/vectorized fallback
 
+**Density method** selects `sampled` for the previous Python implementation or
+`analytic` for the MATLAB-v2 smooth, tail-aware density calculation. The sampled
+method remains the default rollback path. For converged analytic Fe calculations,
+start with 200 density slices per cell.
+
 The dynamic fitter caches material, density, and substrate calculations during
 optimization. Code using the Python API can obtain the same reuse by passing a
 single `DynamicWorkspace()` to repeated `calc_dynamic_density()` calls.
@@ -92,7 +98,7 @@ the original GenL table automatically.
 
 ## GUI controls
 
-The parameter area is divided into four groups:
+The film-parameter notebook is divided into four groups:
 
 - **Kinematic**: film plane spacing, coherent planes, resolution, intensity
   scale, background, Debye-Waller coefficient, and an optional substrate peak.
@@ -103,6 +109,26 @@ The parameter area is divided into four groups:
   parameters.
 - **Optimization / simulation**: random seed, progress update interval,
   differential-evolution limits, local evaluations, and polish iterations.
+
+The separate **Superlattice simulation and fitting** panel below the film notebook has
+**Structure** and **Calculation** tabs. It provides a reusable superlattice file,
+substrate and repeated-layer rows, repetitions, unit-cell counts, interface
+spacing, lattice scales, and axis-aware sampling. An optional capping layer is
+appended after the repeated sequence and has the same editable structure and fit
+controls. The layer parameter list has its own vertical scrollbar. Its calculation values share
+the same resolution, intensity-scale, background, backend, and density controls
+as the main model tabs. Interface spacing, lattice scale, area scale, resolution,
+intensity scale, and both background parameters have fit selectors, editable
+bounds, and boundary gauges. Sampling density, density slices, and density Q
+maximum remain value-only controls.
+
+Use **Load data...** in the superlattice **Structure** tab to select a two-column
+`2theta/intensity` file or a three-column `2theta/q/intensity` file such as
+`data/examples/Fe-V_fit.txt`. Loading sets the full available axis range; the
+data are previewed in the center plot. Pressing **Simulate** overlays the
+calculated superlattice pattern on the selected experimental data range. **Run
+fit** uses the selected superlattice parameters and the shared optimization,
+pause/resume, progress, and export workflow.
 
 Structure-file menus are populated from the `*.vasp` files in
 `data/structures/`. Each optimizable parameter has a **Fit** checkbox, current
@@ -137,6 +163,32 @@ figures use logarithmic intensity with 2theta and q axes. The GUI also contains
 a link to the GenL article in its citation watermark.
 
 ## Examples and validation
+
+Simulate the nominal `[Fe(4 ML)/V(28 ML)] x 11` superlattice from the GenL
+paper using the reusable structure definition in
+`data/stacks/fe_v_4_28_x11.json`:
+
+```bash
+.venv/bin/python examples/superlattice.py
+```
+
+Use the dynamic model for the same superlattice:
+
+```bash
+.venv/bin/python examples/superlattice.py --model dynamic
+```
+
+Fit the parameters selected in the superlattice file after supplying a two-column
+experimental data file:
+
+```bash
+.venv/bin/python examples/superlattice.py --data path/to/fe_v_data.txt --fit --maxiter 20 --popsize 8
+```
+
+Each run saves the calculated pattern and a fully expanded
+`*_resolved_superlattice.json` record of every layer and effective fitted value.
+Repeated layers with the same name share fitted parameters, so all 11 Fe/V
+bilayers remain tied during optimization.
 
 Run a minimal Fe kinematic simulation:
 
@@ -190,6 +242,16 @@ Benchmark the dynamic propagation backends:
 .venv/bin/python validation/benchmark_dynamic_propagation.py
 ```
 
+Check analytic-density slice convergence:
+
+```bash
+.venv/bin/python validation/validate_dynamic_density_convergence.py
+```
+
+MATLAB-v2 parity references can be exported with
+`matlab/kinematic_and_dynamic/export_subroutines_v2_reference.m`, then checked
+with `.venv/bin/python validation/validate_matlab_v2_density.py`.
+
 Run all tests:
 
 ```bash
@@ -209,6 +271,7 @@ Windows users can replace `.venv/bin/python` in these commands with
 - `data/examples/`: bundled experimental and reference patterns
 - `data/form_factors/`: atomic and scattering-factor tables
 - `data/structures/`: POSCAR/VASP crystal structures
+- `data/stacks/`: reusable superlattice, substrate, and fit definitions
 - `archive/`: older material retained for reference, not active code
 
 ## Current limitations
@@ -218,9 +281,11 @@ Windows users can replace `.venv/bin/python` in these commands with
 - Kinematic roughness averages intensities of discrete thickness components;
   dynamic roughness averages complex amplitudes.
 - Checkpoints are retained only for the current GUI session.
+- Superlattice strain and roughness are not yet exposed in the GUI fitter.
 
 Rollback snapshots are stored under `archive/`, including versions before
-project export, dynamic workspaces, fit checkpoints, and reflection recursion.
+project export, dynamic workspaces, fit checkpoints, reflection recursion, and
+the MATLAB-v2 density port.
 
 ## Citation
 
@@ -244,6 +309,8 @@ The original MATLAB implementation is retained under `matlab/`:
   including fitting
 - `matlab/kinematic_and_dynamic/subroutines_updated/`: updated dynamic
   reflection and transmission propagation routines
+- `matlab/kinematic_and_dynamic/subroutines_v2/`: analytic density and shared
+  sigma/pi propagation updates
 - `matlab/binaries/`: installers for macOS Ventura, Windows 10, and Windows 11
 
 The installers add the free MATLAB Runtime and place GenL with the installed
@@ -259,5 +326,5 @@ For source-based use:
   the kinematic or dynamic model.
 
 Starting with the kinematic model is recommended for a quick initial estimate,
-followed by the dynamic model for higher accuracy. More complicated film stacks
-and superlattices can be modeled from the command-line implementation.
+followed by the dynamic model for higher accuracy. Superlattices can be edited,
+simulated, and fitted in the GUI or with the command-line runner.

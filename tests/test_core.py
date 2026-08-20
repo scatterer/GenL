@@ -1,8 +1,10 @@
+import copy
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -14,6 +16,8 @@ from genl import (
     DynamicWorkspace,
     Instrument,
     Layer,
+    StackDefinition,
+    StackModel,
     calc_kinematic,
     calc_dynamic_density,
     form_factors,
@@ -38,10 +42,12 @@ from genl.gui import (
     load_sample_data,
     read_experimental_data,
     save_result_plots,
+    stack_simulation_grid,
 )
 from genl.fit_models import DynamicModel, roughness_distribution
 import genl.dynamic as dynamic
-from genl.paths import EXAMPLE_DATA_DIR, FORM_FACTOR_DIR, STRUCTURE_DIR
+import genl.kinematic as kinematic
+from genl.paths import EXAMPLE_DATA_DIR, FORM_FACTOR_DIR, STACK_DIR, STRUCTURE_DIR
 from validation.validate_fe_kinematic import validate_fe_kinematic
 
 DATA = FORM_FACTOR_DIR
@@ -50,6 +56,14 @@ FE_DATA = EXAMPLE_DATA_DIR / "Example_data_10nmFe.txt"
 
 
 class CoreTests(unittest.TestCase):
+    def test_stack_simulation_grid_uses_selected_axis_density(self):
+        twotheta, q = stack_simulation_grid(60.0, 62.0, 10.0, False, 1.5406)
+        self.assertEqual(len(twotheta), 21)
+        self.assertAlmostEqual(twotheta[0], 60.0)
+        q_twotheta, q_values = stack_simulation_grid(q[0], q[-1], 100.0, True, 1.5406)
+        self.assertEqual(len(q_values), int(np.ceil((q[-1] - q[0]) * 100.0)) + 1)
+        self.assertAlmostEqual(q_twotheta[0], 60.0)
+
     def test_density_sampling_rejects_aliasing(self):
         self.assertAlmostEqual(validate_density_sampling(4.0, 100, 30.0), 25.0 * np.pi)
         with self.assertRaisesRegex(ValueError, "Nyquist"):
@@ -73,6 +87,123 @@ class CoreTests(unittest.TestCase):
 
         for atom_form_factor in np.asarray(prepared["ff"]).T:
             np.testing.assert_allclose(atom_form_factor, expected)
+
+    def test_fe_v_stack_expands_and_simulates(self):
+        definition = StackDefinition.load(STACK_DIR / "fe_v_4_28_x11.json")
+        layers = definition.layers()
+
+        sequence = definition.document["sequence"]
+        cap_count = int(definition.document.get("capping_layer") is not None)
+        self.assertEqual(
+            len(layers),
+            1 + int(sequence["repetitions"]) * len(sequence["layers"]) + cap_count,
+        )
+        self.assertEqual([layers[1].n, layers[2].n], [13, 2])
+        self.assertEqual(
+            [Path(layer.filename).stem for layer in layers[1:5]],
+            ["V_fractional", "Fe_fractional", "V_fractional", "Fe_fractional"],
+        )
+        model = StackModel(definition, np.linspace(64.0, 67.0, 31))
+        predicted = model.predict()
+        self.assertTrue(np.all(np.isfinite(predicted)))
+        self.assertTrue(np.all(predicted >= 0))
+
+    def test_superlattice_fit_residual_uses_selected_parameters(self):
+        base = StackDefinition.load(STACK_DIR / "fe_v_4_28_x11.json")
+        document = copy.deepcopy(base.document)
+        document["model"] = "kinematic"
+        fe_layer = next(
+            layer for layer in document["sequence"]["layers"] if layer["name"] == "Fe"
+        )
+        interface = float(fe_layer["dinterface"])
+        intensity_scale = float(document["calculation"]["intensity_scale"])
+        document["fit_parameters"] = [
+            {
+                "target": "Fe.dinterface",
+                "min": max(0.0, interface - 0.5),
+                "max": interface + 0.5,
+            },
+            {
+                "target": "calculation.intensity_scale",
+                "min": intensity_scale * 0.5,
+                "max": intensity_scale * 1.5,
+            },
+        ]
+        definition = StackDefinition(base.path, document)
+        twotheta = np.linspace(64.0, 64.2, 5)
+        observed = StackModel(definition, twotheta, model="kinematic").predict(
+            definition.start
+        )
+        model = StackModel(
+            definition, twotheta, observed=observed, model="kinematic"
+        )
+
+        self.assertEqual(
+            definition.parameter_names,
+            ("Fe.dinterface", "calculation.intensity_scale"),
+        )
+        np.testing.assert_allclose(model.residual_vector(definition.start), 0.0)
+        self.assertEqual(model.objective(definition.start), 0.0)
+
+    def test_superlattice_capping_layer_is_appended_and_fittable(self):
+        base = StackDefinition.load(STACK_DIR / "fe_v_4_28_x11.json")
+        document = copy.deepcopy(base.document)
+        document.pop("capping_layer", None)
+        document["fit_parameters"] = []
+        uncapped = StackDefinition(base.path, copy.deepcopy(document))
+        document["capping_layer"] = {
+            "name": "Fe cap",
+            "filename": "Fe_fractional.vasp",
+            "direction": 1,
+            "unit_cells": 1.0,
+            "dinterface": 0.5,
+            "scale": 1.0,
+            "area_scale": 1.0,
+        }
+        document["fit_parameters"] = [
+            {"target": "capping.scale", "min": 0.9, "max": 1.1}
+        ]
+        definition = StackDefinition(base.path, document)
+
+        layers = definition.layers(np.array([1.02]))
+        self.assertEqual(len(layers), len(uncapped.layers()) + 1)
+        self.assertEqual(Path(layers[-1].filename).stem, "Fe_fractional")
+        self.assertAlmostEqual(layers[-1].scale, 1.02)
+        self.assertEqual(
+            definition.resolved_document(np.array([1.02]))["layers"][-1]["name"],
+            "Fe cap",
+        )
+
+    def test_kinematic_multilayer_does_not_repeat_interface_phase(self):
+        q = np.array([1.0])
+        stack = [
+            Layer(direction=1, n=1, filename="Fe_fractional.vasp"),
+            Layer(direction=1, n=1, filename="Fe_fractional.vasp", dinterface=0.2),
+            Layer(direction=1, n=1, filename="Fe_fractional.vasp", dinterface=0.7),
+        ]
+        film_amplitude = np.ones_like(q, dtype=complex)
+        with patch.object(
+            kinematic,
+            "_substrate_like_amplitude",
+            return_value=np.zeros_like(q, dtype=complex),
+        ), patch.object(
+            kinematic,
+            "_layer_amplitude",
+            side_effect=[
+                (film_amplitude, np.array([0.0, 1.0])),
+                (film_amplitude, np.array([2.0, 3.0])),
+            ],
+        ):
+            result = calc_kinematic(
+                q,
+                1.54056,
+                stack,
+                Control(pol=0),
+                poscar_dir=POSCAR,
+                form_factor_dir=DATA,
+            )
+
+        np.testing.assert_allclose(result.refl, [4.0])
 
     def test_save_result_plots_writes_separate_nonblank_images(self):
         update = FitUpdate(
@@ -310,6 +441,63 @@ class CoreTests(unittest.TestCase):
         np.testing.assert_allclose(reflection.refl, fused.refl, rtol=1e-10, atol=1e-13)
         np.testing.assert_allclose(reflection.amplitude_s, fused.amplitude_s, rtol=1e-10, atol=1e-13)
         np.testing.assert_allclose(reflection.amplitude_p, fused.amplitude_p, rtol=1e-10, atol=1e-13)
+
+    def test_analytic_density_matches_backends_and_reuses_kernels(self):
+        if dynamic._prepare_substrate_reflection_pair_numba is None:
+            self.skipTest("numba reflection backend is unavailable")
+        q = np.linspace(2.9, 3.1, 31)
+        stack = [
+            Layer(direction=1, n=1e4, filename="MgO_001_fractional.vasp"),
+            Layer(
+                direction=1,
+                n=8,
+                filename="Fe_fractional.vasp",
+                dinterface=1.4,
+                bottom_strain_amplitude=0.02,
+                bottom_strain_end=3,
+            ),
+        ]
+        kwargs = {
+            "poscar_dir": POSCAR,
+            "form_factor_dir": DATA,
+            "slices": 50,
+            "max_q0": 30.0,
+            "density_method": "analytic",
+        }
+        workspace = DynamicWorkspace()
+        reflection = calc_dynamic_density(
+            q,
+            1.54056,
+            stack,
+            propagation_backend="reflection",
+            workspace=workspace,
+            **kwargs,
+        )
+        material_builds = workspace.material_builds
+        kernel_count = len(workspace.atomic_kernels)
+        cached = calc_dynamic_density(
+            q,
+            1.54056,
+            stack,
+            propagation_backend="reflection",
+            workspace=workspace,
+            **kwargs,
+        )
+        fused = calc_dynamic_density(
+            q, 1.54056, stack, propagation_backend="fused", **kwargs
+        )
+        legacy = calc_dynamic_density(
+            q, 1.54056, stack, propagation_backend="legacy", **kwargs
+        )
+
+        self.assertEqual(workspace.material_builds, material_builds)
+        self.assertEqual(len(workspace.atomic_kernels), kernel_count)
+        self.assertEqual(reflection.diagnostics["density_method"], "analytic")
+        self.assertTrue(reflection.diagnostics["vacuum_was_extended"])
+        self.assertTrue(np.all(np.isfinite(reflection.rho_e)))
+        np.testing.assert_allclose(cached.refl, reflection.refl, rtol=0, atol=0)
+        np.testing.assert_allclose(fused.refl, reflection.refl, rtol=1e-9, atol=1e-11)
+        np.testing.assert_allclose(legacy.refl, reflection.refl, rtol=1e-9, atol=1e-11)
 
     def test_gaas_low_angle_reflectivity_is_passive(self):
         angle = 0.69
@@ -641,6 +829,18 @@ class CoreTests(unittest.TestCase):
         self.assertLess(len(restricted_twotheta), len(twotheta))
         self.assertGreaterEqual(float(np.min(restricted_twotheta)), 58.92)
         self.assertLessEqual(float(np.max(restricted_twotheta)), 68.0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            three_column_path = Path(directory) / "superlattice.txt"
+            np.savetxt(
+                three_column_path,
+                [[50.0, 3.44, 0.036], [50.1, 3.45, 0.042]],
+            )
+            three_column_twotheta, three_column_intensity = read_experimental_data(
+                three_column_path
+            )
+        np.testing.assert_allclose(three_column_twotheta, [50.0, 50.1])
+        np.testing.assert_allclose(three_column_intensity, [0.036, 0.042])
 
     def test_fe_kinematic_matches_brute_force_sum(self):
         metrics = validate_fe_kinematic()

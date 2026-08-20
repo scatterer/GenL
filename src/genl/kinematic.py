@@ -125,7 +125,7 @@ def calc_kinematic(
                 unit_cell_volume,
             )
             strain[layer_index] = strained
-            total_amplitude = total_amplitude + np.exp(1j * q * layer.dinterface) * layer_amplitude
+            total_amplitude = total_amplitude + layer_amplitude
 
         layer.pre_calc_f = pre_calc
 
@@ -330,7 +330,7 @@ def _layer_amplitude(
                 f_by_atom,
                 unit_cell_volume,
             )
-            amplitudes[:, idx] = np.exp(1j * q * layer.dinterface) * layer_total
+            amplitudes[:, idx] = layer_total
             amplitudes[:, idx] *= np.sqrt(weight)
             tally += np.sqrt(weight)
         return np.sum(amplitudes / tally, axis=1), last_strain

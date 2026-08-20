@@ -46,6 +46,11 @@ validation/*_fit.csv
 validation/*_fit_progress.png
 validation/gaas_substrate_dynamic.csv
 validation/gaas_substrate_dynamic.png
+validation/*_pattern.csv
+validation/*_pattern.png
+validation/*_resolved_stack.json
+validation/*_resolved_superlattice.json
+validation/*_density.csv
 
 # macOS local metadata
 .DS_Store

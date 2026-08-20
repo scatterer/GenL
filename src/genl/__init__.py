@@ -15,6 +15,7 @@ from .dynamic import (
     validate_density_sampling,
 )
 from .poscar import PoscarStructure, read_poscar
+from .stack import STACK_FORMAT, STACK_VERSION, StackDefinition, StackModel
 
 __all__ = [
     "Control",
@@ -26,6 +27,10 @@ __all__ = [
     "KinematicResult",
     "Layer",
     "PoscarStructure",
+    "STACK_FORMAT",
+    "STACK_VERSION",
+    "StackDefinition",
+    "StackModel",
     "calc_kinematic",
     "calc_dynamic_density",
     "form_factors",

@@ -27,17 +27,27 @@ class DynamicResult:
     rho_e: np.ndarray
     amplitude_s: np.ndarray | None = None
     amplitude_p: np.ndarray | None = None
+    diagnostics: dict[str, float | str | bool] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _AtomicDensityKernel:
+    dx: float
+    primitive: np.ndarray
+    support: float
 
 
 @dataclass(frozen=True)
 class _PreparedMaterial:
     structure: PoscarStructure
-    ff: np.ndarray
+    ff: np.ndarray | None = None
+    kernels: tuple[_AtomicDensityKernel, ...] = ()
 
 
 @dataclass
 class _SubstrateState:
     dz: float
+    vacuum_slices: int
     substrate_end: int
     rho_prefix: np.ndarray
     rho_0r: np.ndarray
@@ -51,6 +61,7 @@ class DynamicWorkspace:
     """Reusable material and substrate work for repeated dynamic evaluations."""
 
     materials: dict[tuple[object, ...], _PreparedMaterial] = field(default_factory=dict)
+    atomic_kernels: dict[tuple[object, ...], _AtomicDensityKernel] = field(default_factory=dict)
     substrate_key: tuple[object, ...] | None = None
     substrate_state: _SubstrateState | None = None
     material_builds: int = 0
@@ -89,13 +100,17 @@ def calc_dynamic_density(
     step_q0: float = 0.1,
     propagation_backend: str | None = None,
     workspace: DynamicWorkspace | None = None,
+    density_method: str = "sampled",
+    density_tail_tol: float = 1e-10,
+    density_internal_dq: float = 0.01,
+    density_auto_vacuum: bool = True,
 ) -> DynamicResult:
     """Density-based dynamic scattering calculation ported from GenL MATLAB.
 
-    This first Python port covers substrate-only and substrate + film paths
-    without roughness averaging. It mirrors `parratt_matrix_repeated_rhobuiltin`
-    enough to support dynamic fitting while keeping the implementation testable.
-    The backend selects both electron-density generation and matrix propagation.
+    Supports substrate-only, single-film, and multilayer stacks without direct
+    roughness averaging. ``density_method="analytic"`` uses the smooth,
+    tail-aware density construction from the MATLAB v2 routines; ``sampled``
+    retains the previous Python implementation.
     """
 
     if len(stack) < 1:
@@ -108,6 +123,10 @@ def calc_dynamic_density(
         raise ValueError("density Q max must be positive")
     if step_q0 <= 0:
         raise ValueError("density Q step must be positive")
+    if not 0.0 < density_tail_tol < 1.0:
+        raise ValueError("density_tail_tol must lie between 0 and 1")
+    if density_internal_dq <= 0:
+        raise ValueError("density_internal_dq must be positive")
 
     q = np.asarray(q, dtype=float)
     control = control or Control(pol=2, model="density")
@@ -117,15 +136,45 @@ def calc_dynamic_density(
         raise ValueError(
             "propagation_backend must be 'auto', 'reflection', 'fused', or 'legacy'"
         )
+    density_method = density_method.lower()
+    if density_method not in {"sampled", "analytic"}:
+        raise ValueError("density_method must be 'sampled' or 'analytic'")
     add_atom_density = (
         _add_atom_density_numba
-        if backend != "legacy" and _add_atom_density_numba is not None
+        if density_method == "sampled"
+        and backend != "legacy"
+        and _add_atom_density_numba is not None
         else _add_atom_density_numpy
     )
 
-    q0 = np.arange(-max_q0, max_q0 + step_q0 * 0.5, step_q0)
+    q_data_max = float(np.max(np.abs(q))) if q.size else 0.0
+    q_physical_max = 4.0 * np.pi / wavelength
+    density_qpass = max(q_data_max, q_physical_max)
+    if density_method == "analytic" and density_qpass >= max_q0:
+        raise ValueError(
+            "density Q max must exceed both the calculated Q range and 4*pi/wavelength "
+            f"({density_qpass:.6g} 1/A required)"
+        )
+
+    q0 = (
+        np.arange(-max_q0, max_q0 + step_q0 * 0.5, step_q0)
+        if density_method == "sampled"
+        else np.empty(0, dtype=float)
+    )
     prepared = [
-        _prepare_layer(layer, wavelength, q0, poscar_dir, form_factor_dir, workspace)
+        _prepare_layer(
+            layer,
+            wavelength,
+            q0,
+            poscar_dir,
+            form_factor_dir,
+            workspace,
+            density_method=density_method,
+            density_qpass=density_qpass,
+            density_qstop=max_q0,
+            density_tail_tol=density_tail_tol,
+            density_internal_dq=density_internal_dq,
+        )
         for layer in stack
     ]
     validate_density_sampling(float(prepared[0]["lat_par"]), slices, max_q0)
@@ -146,24 +195,37 @@ def calc_dynamic_density(
         )
         strain_positions[idx] = positions
         sorted_indices[idx] = sorted_idx
-        last_atom_z = float(positions[-1])
+        last_atom_z = float(np.max(positions))
 
     if len(stack) == 1:
         totthick = float(last_atom_z)
     else:
         totthick = float(max(strain_positions[len(stack) - 1]))
     substrate = prepared[0]
+    dz = float(substrate["lat_par"]) / slices
+    max_support = max(
+        (kernel.support for layer in prepared for kernel in layer["kernels"]),
+        default=0.0,
+    )
+    effective_vacuum = (
+        max(vacuum_thick, max_support + 2.0 * dz)
+        if density_method == "analytic" and density_auto_vacuum
+        else vacuum_thick
+    )
     substrate_key = _substrate_cache_key(
         q,
         wavelength,
         stack[0],
         poscar_dir,
         form_factor_dir,
-        vacuum_thick,
+        effective_vacuum,
         slices,
         max_q0,
         step_q0,
         backend,
+        density_method,
+        density_tail_tol,
+        density_internal_dq,
     )
     if (
         workspace is not None
@@ -172,20 +234,25 @@ def calc_dynamic_density(
     ):
         substrate_state = workspace.substrate_state
     else:
-        substrate_state = _build_substrate_state(
-            substrate,
-            q0,
-            vacuum_thick,
-            slices,
-            add_atom_density,
-        )
+        if density_method == "analytic":
+            substrate_state = _build_analytic_substrate_state(
+                substrate, effective_vacuum, slices
+            )
+        else:
+            substrate_state = _build_substrate_state(
+                substrate,
+                q0,
+                effective_vacuum,
+                slices,
+                add_atom_density,
+            )
         if workspace is not None:
             workspace.substrate_key = substrate_key
             workspace.substrate_state = substrate_state
             workspace.substrate_builds += 1
 
     dz = substrate_state.dz
-    vacuum_slices = matlab_round(vacuum_thick / dz)
+    vacuum_slices = substrate_state.vacuum_slices
     vacuum_thick_exact = dz * vacuum_slices
     z = np.arange(-vacuum_thick_exact, totthick + vacuum_thick_exact + dz * 0.5, dz)
     rho_e = np.zeros_like(z, dtype=complex)
@@ -199,15 +266,25 @@ def calc_dynamic_density(
         sorted_idx = sorted_indices[idx]
         for atom_counter, pos_z in enumerate(positions):
             form_factor_idx = sorted_idx[atom_counter % len(sorted_idx)]
-            add_atom_density(
-                rho_e,
-                z,
-                pos_z,
-                layer_data["lat_par"],
-                layer_data["area"],
-                q0,
-                layer_data["ff"][:, form_factor_idx],
-            )
+            if density_method == "analytic":
+                _add_atom_density_analytic(
+                    rho_e,
+                    z,
+                    pos_z,
+                    float(layer_data["area"]),
+                    layer_data["kernels"][form_factor_idx],
+                    dz,
+                )
+            else:
+                add_atom_density(
+                    rho_e,
+                    z,
+                    pos_z,
+                    layer_data["lat_par"],
+                    layer_data["area"],
+                    q0,
+                    layer_data["ff"][:, form_factor_idx],
+                )
 
     rho_rest = rho_e[substrate_end:]
     rho_0r = substrate_state.rho_0r
@@ -243,6 +320,18 @@ def calc_dynamic_density(
         rho_e=rho_e,
         amplitude_s=amplitude_s,
         amplitude_p=amplitude_p,
+        diagnostics={
+            "density_method": density_method,
+            "density_qpass": density_qpass,
+            "density_qstop": max_q0,
+            "density_tail_tol": density_tail_tol,
+            "density_internal_dq": density_internal_dq,
+            "vacuum_thickness_requested": vacuum_thick,
+            "vacuum_thickness_used": vacuum_thick_exact,
+            "vacuum_was_extended": vacuum_thick_exact > vacuum_thick + dz / 2.0,
+            "max_atom_support": max_support,
+            "nyquist_q": np.pi / dz,
+        },
     )
 
 
@@ -552,9 +641,9 @@ if njit is not None:
             return invtp, invtm * r, invtp * r, invtm
 
         deltan_current = wavelength**2 * sld_current.real / (2.0 * np.pi)
-        betan_current = 1j * wavelength**2 * sld_current.imag / (2.0 * np.pi)
+        betan_current = -1j * wavelength**2 * sld_current.imag / (2.0 * np.pi)
         deltan_previous = wavelength**2 * sld_previous.real / (2.0 * np.pi)
-        betan_previous = 1j * wavelength**2 * sld_previous.imag / (2.0 * np.pi)
+        betan_previous = -1j * wavelength**2 * sld_previous.imag / (2.0 * np.pi)
         n_current = 1.0 - deltan_current - betan_current
         n_previous = 1.0 - deltan_previous - betan_previous
         fact1 = n_previous**2 * kz_current
@@ -672,9 +761,9 @@ if njit is not None:
             )
 
             deltan_current = wavelength**2 * sld_current.real / (2.0 * np.pi)
-            betan_current = 1j * wavelength**2 * sld_current.imag / (2.0 * np.pi)
+            betan_current = -1j * wavelength**2 * sld_current.imag / (2.0 * np.pi)
             deltan_previous = wavelength**2 * sld_previous.real / (2.0 * np.pi)
-            betan_previous = 1j * wavelength**2 * sld_previous.imag / (2.0 * np.pi)
+            betan_previous = -1j * wavelength**2 * sld_previous.imag / (2.0 * np.pi)
             n_current = 1.0 - deltan_current - betan_current
             n_previous = 1.0 - deltan_previous - betan_previous
             fact1 = n_previous**2 * kz_current
@@ -753,7 +842,7 @@ if njit is not None:
         n_current = (
             1.0
             - wavelength**2 * sld_current.real / (2.0 * np.pi)
-            - 1j * wavelength**2 * sld_current.imag / (2.0 * np.pi)
+            + 1j * wavelength**2 * sld_current.imag / (2.0 * np.pi)
         )
 
         for layer in range(len(rho_e) - 1, 0, -1):
@@ -766,7 +855,7 @@ if njit is not None:
             n_previous = (
                 1.0
                 - wavelength**2 * sld_previous.real / (2.0 * np.pi)
-                - 1j * wavelength**2 * sld_previous.imag / (2.0 * np.pi)
+                + 1j * wavelength**2 * sld_previous.imag / (2.0 * np.pi)
             )
             phase = np.exp(-1j * kz_current * dz)
 
@@ -809,7 +898,7 @@ if njit is not None:
         n_current = (
             1.0
             - wavelength**2 * sld_current.real / (2.0 * np.pi)
-            - 1j * wavelength**2 * sld_current.imag / (2.0 * np.pi)
+            + 1j * wavelength**2 * sld_current.imag / (2.0 * np.pi)
         )
 
         for layer in range(len(rho_e) - 1, 0, -1):
@@ -822,7 +911,7 @@ if njit is not None:
             n_previous = (
                 1.0
                 - wavelength**2 * sld_previous.real / (2.0 * np.pi)
-                - 1j * wavelength**2 * sld_previous.imag / (2.0 * np.pi)
+                + 1j * wavelength**2 * sld_previous.imag / (2.0 * np.pi)
             )
             if pol == 0:
                 interface = (kz_previous - kz_current) / (kz_previous + kz_current)
@@ -849,6 +938,81 @@ if njit is not None:
             n_current = n_previous
 
         return h11, h12, h21, h22
+
+    @njit(cache=True)
+    def _profile_mobius_pair_at_q(
+        q_value: float,
+        wavelength: float,
+        rho_e: np.ndarray,
+        dz: float,
+    ) -> tuple[complex, complex, complex, complex, complex, complex, complex, complex]:
+        sh11 = ph11 = 1.0 + 0.0j
+        sh12 = ph12 = 0.0 + 0.0j
+        sh21 = ph21 = 0.0 + 0.0j
+        sh22 = ph22 = 1.0 + 0.0j
+        if len(rho_e) < 2:
+            return sh11, sh12, sh21, sh22, ph11, ph12, ph21, ph22
+
+        factor = 8.0 * (2.0 * np.pi / wavelength) ** 2 * wavelength**2 / (2.0 * np.pi)
+        sld_current = rho_e[-1] * R0_ANGSTROM / (2.0 * np.pi)
+        kz_current = np.sqrt(
+            q_value**2 - factor * sld_current.real + 1j * factor * sld_current.imag
+        )
+        n_current = (
+            1.0
+            - wavelength**2 * sld_current.real / (2.0 * np.pi)
+            + 1j * wavelength**2 * sld_current.imag / (2.0 * np.pi)
+        )
+
+        for layer in range(len(rho_e) - 1, 0, -1):
+            sld_previous = rho_e[layer - 1] * R0_ANGSTROM / (2.0 * np.pi)
+            kz_previous = np.sqrt(
+                q_value**2 - factor * sld_previous.real + 1j * factor * sld_previous.imag
+            )
+            n_previous = (
+                1.0
+                - wavelength**2 * sld_previous.real / (2.0 * np.pi)
+                + 1j * wavelength**2 * sld_previous.imag / (2.0 * np.pi)
+            )
+            phase = np.exp(-1j * kz_current * dz)
+            interface_s = (kz_previous - kz_current) / (kz_previous + kz_current)
+            fact1 = n_previous**2 * kz_current
+            fact2 = n_current**2 * kz_previous
+            interface_p = (fact1 - fact2) / (fact1 + fact2)
+
+            interface_phase = interface_s * phase
+            sh11, sh12, sh21, sh22 = (
+                phase * sh11 + interface_s * sh21,
+                phase * sh12 + interface_s * sh22,
+                interface_phase * sh11 + sh21,
+                interface_phase * sh12 + sh22,
+            )
+            scale = max(max(abs(sh11), abs(sh12)), max(abs(sh21), abs(sh22)))
+            if scale != 0.0:
+                sh11 /= scale
+                sh12 /= scale
+                sh21 /= scale
+                sh22 /= scale
+
+            interface_phase = interface_p * phase
+            ph11, ph12, ph21, ph22 = (
+                phase * ph11 + interface_p * ph21,
+                phase * ph12 + interface_p * ph22,
+                interface_phase * ph11 + ph21,
+                interface_phase * ph12 + ph22,
+            )
+            scale = max(max(abs(ph11), abs(ph12)), max(abs(ph21), abs(ph22)))
+            if scale != 0.0:
+                ph11 /= scale
+                ph12 /= scale
+                ph21 /= scale
+                ph22 /= scale
+
+            sld_current = sld_previous
+            kz_current = kz_previous
+            n_current = n_previous
+
+        return sh11, sh12, sh21, sh22, ph11, ph12, ph21, ph22
 
     @njit(cache=True, inline="always")
     def _mobius_power_abs_scaled(
@@ -907,10 +1071,13 @@ if njit is not None:
             cap_s, cap_p = _apply_profile_reflection_pair_at_q(
                 q[idx], wavelength, rho_0r, dz, 0.0 + 0.0j, 0.0 + 0.0j
             )
+            maps = _profile_mobius_pair_at_q(q[idx], wavelength, rho_1r, dz)
             for pol in range(2):
-                h00, h01, h10, h11 = _profile_mobius_at_q(
-                    q[idx], wavelength, rho_1r, dz, pol
-                )
+                offset = pol * 4
+                h00 = maps[offset]
+                h01 = maps[offset + 1]
+                h10 = maps[offset + 2]
+                h11 = maps[offset + 3]
                 p00, p01, p10, p11 = _mobius_power_abs_scaled(
                     h00, h01, h10, h11, exponent
                 )
@@ -1096,7 +1263,7 @@ def make_a_matrix(
 
     if pol == 1:
         deltan = wavelength**2 * np.real(sld) / (2.0 * np.pi)
-        betan = 1j * wavelength**2 * np.imag(sld) / (2.0 * np.pi)
+        betan = -1j * wavelength**2 * np.imag(sld) / (2.0 * np.pi)
         n = 1.0 - deltan[:, np.newaxis] - betan[:, np.newaxis]
         n_shifted = np.roll(n, 1, axis=0)
         fact1 = n_shifted**2 * kz_all
@@ -1166,6 +1333,123 @@ def fast_matrix_power(matrix: np.ndarray, exponent: int) -> np.ndarray:
     return result
 
 
+def _smooth_flat_window(q: np.ndarray, qpass: float, qstop: float) -> np.ndarray:
+    window = np.ones_like(q)
+    window[q >= qstop] = 0.0
+    transition = (q > qpass) & (q < qstop)
+    if np.any(transition):
+        t = (q[transition] - qpass) / (qstop - qpass)
+        left = np.exp(-1.0 / t)
+        right = np.exp(-1.0 / (1.0 - t))
+        window[transition] = 1.0 - left / (left + right)
+    return window
+
+
+def _density_primitive_sum_blocks(
+    q: np.ndarray, base: np.ndarray, x: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    rho = np.zeros_like(x, dtype=complex)
+    primitive = np.zeros_like(x, dtype=complex)
+    q_column = q[:, np.newaxis]
+    base_row = base[np.newaxis, :]
+    base_over_q = base[1:] / q[1:]
+    for first in range(0, len(x), 128):
+        block = slice(first, min(first + 128, len(x)))
+        phase = q_column * x[block][np.newaxis, :]
+        rho[block] = base_row @ np.cos(phase)
+        primitive[block] = base[0] * x[block] + base_over_q @ np.sin(phase[1:])
+    return rho, primitive
+
+
+def _build_atomic_density_kernel(
+    a: np.ndarray,
+    b: np.ndarray,
+    c: float,
+    f_1: float,
+    f_2: float,
+    debye_waller: float,
+    qpass: float,
+    qstop: float,
+    tail_tol: float,
+    internal_dq: float,
+) -> _AtomicDensityKernel:
+    intervals = int(np.ceil(qstop / internal_dq))
+    intervals += intervals % 2
+    q = np.linspace(0.0, qstop, intervals + 1)
+    h = qstop / intervals
+    weights = np.ones_like(q)
+    weights[1:-1:2] = 4.0
+    weights[2:-1:2] = 2.0
+    weights *= h / 3.0
+
+    u = (q / (4.0 * np.pi)) ** 2
+    form_factor = (c + f_1 - 1j * f_2) * np.exp(-debye_waller * u)
+    form_factor += np.sum(
+        a[:, np.newaxis] * np.exp(-(b + debye_waller)[:, np.newaxis] * u),
+        axis=0,
+    )
+    base = 2.0 * weights * form_factor * _smooth_flat_window(q, qpass, qstop)
+
+    dx = np.pi / (16.0 * qstop)
+    radius = 8.0
+    for _ in range(8):
+        x = np.arange(0.0, radius + dx * 0.5, dx)
+        rho, primitive = _density_primitive_sum_blocks(q, base, x)
+        scale = float(np.max(np.abs(rho)))
+        if scale == 0.0:
+            return _AtomicDensityKernel(dx=dx, primitive=np.zeros(2, dtype=complex), support=0.0)
+        envelope = np.maximum.accumulate(np.abs(rho)[::-1])[::-1]
+        indices = np.flatnonzero(envelope <= tail_tol * scale)
+        if indices.size:
+            return _AtomicDensityKernel(
+                dx=dx,
+                primitive=primitive,
+                support=float(x[indices[0]]),
+            )
+        radius *= 2.0
+    return _AtomicDensityKernel(dx=dx, primitive=primitive, support=radius / 2.0)
+
+
+def _primitive_interp(kernel: _AtomicDensityKernel, x: np.ndarray) -> np.ndarray:
+    absolute = np.abs(x)
+    values = kernel.primitive
+    if len(values) < 2 or kernel.dx <= 0.0:
+        return np.sign(x) * values[-1]
+    upper = len(values) - 1
+    position = absolute / kernel.dx
+    lower = np.minimum(position.astype(np.int64), upper - 1)
+    fraction = position - lower
+    interpolated = values[lower] + fraction * (values[lower + 1] - values[lower])
+    interpolated[absolute >= upper * kernel.dx] = values[-1]
+    return np.sign(x) * interpolated
+
+
+def _add_atom_density_analytic(
+    rho_e: np.ndarray,
+    z: np.ndarray,
+    pos_z: float,
+    area: float,
+    kernel: _AtomicDensityKernel,
+    dz: float,
+) -> None:
+    if kernel.support <= 0.0 or z.size == 0:
+        return
+    padding = 1e-9 * max(dz, 1.0)
+    lower = pos_z - kernel.support - dz / 2.0 - padding
+    upper = pos_z + kernel.support + dz / 2.0 + padding
+    first = max(0, int(np.ceil((lower - z[0]) / dz)))
+    last = min(len(z) - 1, int(np.floor((upper - z[0]) / dz)))
+    if last < first:
+        return
+    indices = np.arange(first, last + 1)
+    centers = z[indices] - pos_z
+    contribution = (
+        _primitive_interp(kernel, centers + dz / 2.0)
+        - _primitive_interp(kernel, centers - dz / 2.0)
+    ) / dz
+    rho_e[indices] += contribution / area
+
+
 def _prepare_layer(
     layer: Layer,
     wavelength: float,
@@ -1173,39 +1457,97 @@ def _prepare_layer(
     poscar_dir: str | Path | None,
     form_factor_dir: str | Path | None,
     workspace: DynamicWorkspace | None = None,
+    *,
+    density_method: str = "sampled",
+    density_qpass: float = 0.0,
+    density_qstop: float = 30.0,
+    density_tail_tol: float = 1e-10,
+    density_internal_dq: float = 0.01,
 ) -> dict[str, np.ndarray | float | PoscarStructure]:
     poscar_path = Path(layer.filename)
     if poscar_dir is not None and not poscar_path.is_absolute():
         poscar_path = Path(poscar_dir) / poscar_path
     poscar_path = poscar_path.resolve()
     form_factor_path = None if form_factor_dir is None else str(Path(form_factor_dir).resolve())
-    material_key = (
-        str(poscar_path),
-        float(wavelength),
-        float(q0[0]),
-        float(q0[-1]),
-        len(q0),
-        form_factor_path,
-    )
+    if density_method == "analytic":
+        material_key = (
+            "analytic",
+            str(poscar_path),
+            float(wavelength),
+            float(density_qpass),
+            float(density_qstop),
+            float(density_tail_tol),
+            float(density_internal_dq),
+            form_factor_path,
+        )
+    else:
+        material_key = (
+            "sampled",
+            str(poscar_path),
+            float(wavelength),
+            float(q0[0]),
+            float(q0[-1]),
+            len(q0),
+            form_factor_path,
+        )
     material = None if workspace is None else workspace.materials.get(material_key)
     if material is None:
         structure = read_poscar(poscar_path)
-        ff = np.zeros((len(q0), int(np.sum(structure.type_counts))), dtype=complex)
-        cursor = 0
-        for element, count in zip(structure.types, structure.type_counts):
-            atomic_number = ELEMENT_SYMBOLS.index(element) + 1
-            f_q, _, _ = form_factors(
-                q0,
-                read_form_factor_coefficients(atomic_number, wavelength, form_factor_dir),
-                1.0,
-            )
-            f_q = f_q * np.exp(
-                -debye_waller_prefactor(atomic_number) * (q0 / (4.0 * np.pi)) ** 2
-            )
-            for _ in range(int(count)):
-                ff[:, cursor] = f_q
-                cursor += 1
-        material = _PreparedMaterial(structure=structure, ff=ff)
+        if density_method == "analytic":
+            kernels: list[_AtomicDensityKernel] = []
+            for element, count in zip(structure.types, structure.type_counts):
+                atomic_number = ELEMENT_SYMBOLS.index(element) + 1
+                kernel_key = (
+                    atomic_number,
+                    float(wavelength),
+                    float(density_qpass),
+                    float(density_qstop),
+                    float(density_tail_tol),
+                    float(density_internal_dq),
+                    form_factor_path,
+                )
+                kernel = (
+                    None
+                    if workspace is None
+                    else workspace.atomic_kernels.get(kernel_key)
+                )
+                if kernel is None:
+                    coefficients = read_form_factor_coefficients(
+                        atomic_number, wavelength, form_factor_dir
+                    )
+                    kernel = _build_atomic_density_kernel(
+                        coefficients.a[0],
+                        coefficients.b[0],
+                        float(coefficients.c[0]),
+                        float(coefficients.f_1[0]),
+                        float(coefficients.f_2[0]),
+                        debye_waller_prefactor(atomic_number),
+                        density_qpass,
+                        density_qstop,
+                        density_tail_tol,
+                        density_internal_dq,
+                    )
+                    if workspace is not None:
+                        workspace.atomic_kernels[kernel_key] = kernel
+                kernels.extend([kernel] * int(count))
+            material = _PreparedMaterial(structure=structure, kernels=tuple(kernels))
+        else:
+            ff = np.zeros((len(q0), int(np.sum(structure.type_counts))), dtype=complex)
+            cursor = 0
+            for element, count in zip(structure.types, structure.type_counts):
+                atomic_number = ELEMENT_SYMBOLS.index(element) + 1
+                f_q, _, _ = form_factors(
+                    q0,
+                    read_form_factor_coefficients(atomic_number, wavelength, form_factor_dir),
+                    1.0,
+                )
+                f_q = f_q * np.exp(
+                    -debye_waller_prefactor(atomic_number) * (q0 / (4.0 * np.pi)) ** 2
+                )
+                for _ in range(int(count)):
+                    ff[:, cursor] = f_q
+                    cursor += 1
+            material = _PreparedMaterial(structure=structure, ff=ff)
         if workspace is not None:
             workspace.materials[material_key] = material
             workspace.material_builds += 1
@@ -1220,6 +1562,7 @@ def _prepare_layer(
         "lat_par": float(np.linalg.norm(scaling)),
         "z_s": z_s,
         "ff": material.ff,
+        "kernels": material.kernels,
     }
 
 
@@ -1234,6 +1577,9 @@ def _substrate_cache_key(
     max_q0: float,
     step_q0: float,
     backend: str,
+    density_method: str,
+    density_tail_tol: float,
+    density_internal_dq: float,
 ) -> tuple[object, ...]:
     return (
         q.shape,
@@ -1251,6 +1597,9 @@ def _substrate_cache_key(
         float(max_q0),
         float(step_q0),
         backend,
+        density_method,
+        float(density_tail_tol),
+        float(density_internal_dq),
     )
 
 
@@ -1289,8 +1638,88 @@ def _build_substrate_state(
     rho_1 = rho_e[vacuum_slices + slices - 1 : substrate_end + 1]
     return _SubstrateState(
         dz=dz,
+        vacuum_slices=vacuum_slices,
         substrate_end=substrate_end,
         rho_prefix=rho_e,
+        rho_0r=rho_0[::-1].copy(),
+        rho_1r=rho_1[::-1].copy(),
+    )
+
+
+def _substrate_density_piece_analytic(
+    z: np.ndarray,
+    dz: float,
+    lat_par: float,
+    area: float,
+    atom_positions: np.ndarray,
+    kernels: tuple[_AtomicDensityKernel, ...],
+    mode: str,
+    reference_cell: int,
+) -> np.ndarray:
+    rho = np.zeros_like(z, dtype=complex)
+    z_min = float(np.min(z) - dz / 2.0)
+    z_max = float(np.max(z) + dz / 2.0)
+    for atom_position, kernel in zip(atom_positions, kernels):
+        first_cell = int(np.ceil((z_min - kernel.support - atom_position) / lat_par))
+        last_cell = int(np.floor((z_max + kernel.support - atom_position) / lat_par))
+        if mode == "bottom":
+            first_cell = max(first_cell, 0)
+        elif mode == "top":
+            last_cell = min(last_cell, reference_cell)
+        elif mode != "periodic":
+            raise ValueError(f"Unknown substrate density mode: {mode}")
+        for cell in range(first_cell, last_cell + 1):
+            _add_atom_density_analytic(
+                rho,
+                z,
+                float(atom_position + cell * lat_par),
+                area,
+                kernel,
+                dz,
+            )
+    return rho
+
+
+def _build_analytic_substrate_state(
+    substrate: dict[str, object],
+    vacuum_thick: float,
+    slices: int,
+) -> _SubstrateState:
+    lat_par = float(substrate["lat_par"])
+    area = float(substrate["area"])
+    atom_positions = np.asarray(substrate["z_s"], dtype=float)
+    kernels = substrate["kernels"]
+    dz = lat_par / slices
+    vacuum_slices = matlab_round(vacuum_thick / dz)
+    vacuum_thick_exact = dz * vacuum_slices
+    max_support = max((kernel.support for kernel in kernels), default=0.0)
+    support_end = float(np.max(atom_positions) + 3.0 * lat_par + max_support)
+    z = np.arange(-vacuum_thick_exact, support_end + dz * 0.5, dz)
+
+    substrate_end = vacuum_slices + slices * 2 - 1
+    cell_boundary = vacuum_slices + slices - 1
+    z_0 = z[: cell_boundary + 1]
+    z_1 = z[cell_boundary : substrate_end + 1]
+    z_rest = z[substrate_end:]
+    rho_0 = _substrate_density_piece_analytic(
+        z_0, dz, lat_par, area, atom_positions, kernels, "bottom", 0
+    )
+    rho_1 = _substrate_density_piece_analytic(
+        z_1, dz, lat_par, area, atom_positions, kernels, "periodic", 1
+    )
+    rho_rest = _substrate_density_piece_analytic(
+        z_rest, dz, lat_par, area, atom_positions, kernels, "top", 2
+    )
+
+    rho_prefix = np.zeros_like(z, dtype=complex)
+    rho_prefix[: cell_boundary + 1] = rho_0
+    rho_prefix[cell_boundary : substrate_end + 1] = rho_1
+    rho_prefix[substrate_end:] = rho_rest
+    return _SubstrateState(
+        dz=dz,
+        vacuum_slices=vacuum_slices,
+        substrate_end=substrate_end,
+        rho_prefix=rho_prefix,
         rho_0r=rho_0[::-1].copy(),
         rho_1r=rho_1[::-1].copy(),
     )

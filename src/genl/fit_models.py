@@ -29,6 +29,7 @@ class DynamicModel:
         substrate_area_scale: float = 1.0,
         wavelength: float = 1.5406,
         propagation_backend: str = "auto",
+        density_method: str = "sampled",
         density_slices: int = 100,
         density_max_q0: float = 30.0,
     ) -> None:
@@ -46,6 +47,7 @@ class DynamicModel:
         self.substrate_area_scale = substrate_area_scale
         self.wavelength = wavelength
         self.propagation_backend = propagation_backend
+        self.density_method = density_method
         self.density_slices = density_slices
         self.density_max_q0 = density_max_q0
         self.q = 4.0 * np.pi / self.wavelength * sind(twotheta / 2.0)
@@ -114,6 +116,7 @@ class DynamicModel:
             step_q0=0.1,
             propagation_backend=self.propagation_backend,
             workspace=self.workspace,
+            density_method=self.density_method,
         )
 
     def reflectivity(self, params: np.ndarray) -> np.ndarray:

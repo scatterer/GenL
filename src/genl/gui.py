@@ -13,7 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 
-from .paths import EXAMPLE_DATA_DIR, FORM_FACTOR_DIR, REPOSITORY_ROOT, STRUCTURE_DIR
+from .paths import EXAMPLE_DATA_DIR, FORM_FACTOR_DIR, REPOSITORY_ROOT, STACK_DIR, STRUCTURE_DIR
 
 ROOT = REPOSITORY_ROOT
 CU_K_ALPHA_WAVELENGTH = 1.5406
@@ -36,6 +36,7 @@ UI_COLORS = {
     "substrate": "#8a7bb8",
     "strain": "#3f8f8a",
     "roughness": "#c9677d",
+    "stack": "#6f843f",
     "simulate": "#2f6fad",
     "run": "#2e8540",
     "stop": "#b83232",
@@ -60,6 +61,7 @@ from .fit_models import DynamicModel, roughness_distribution  # noqa: E402
 from .form_factors import form_factors, read_form_factor_coefficients  # noqa: E402
 from .kinematic import matlab_round  # noqa: E402
 from .poscar import read_poscar  # noqa: E402
+from .stack import StackDefinition, StackModel  # noqa: E402
 
 
 def sind(x: np.ndarray | float) -> np.ndarray | float:
@@ -76,6 +78,26 @@ def twotheta_from_q(q: np.ndarray | float, wavelength: float) -> np.ndarray | fl
     if np.any(argument > 1.0):
         raise ValueError("q limit is too large for the selected wavelength")
     return 2.0 * np.rad2deg(np.arcsin(np.clip(argument, -1.0, 1.0)))
+
+
+def stack_simulation_grid(
+    lower: float,
+    upper: float,
+    points_per_unit: float,
+    q_axis: bool,
+    wavelength: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    if upper <= lower:
+        raise ValueError("Superlattice simulation maximum must be greater than minimum")
+    if points_per_unit <= 0:
+        raise ValueError("Superlattice simulation points per axis unit must be positive")
+    point_count = int(np.ceil((upper - lower) * points_per_unit)) + 1
+    if point_count > 1_000_000:
+        raise ValueError("Superlattice simulation grid exceeds 1,000,000 points")
+    axis_values = np.linspace(lower, upper, max(2, point_count))
+    if q_axis:
+        return np.asarray(twotheta_from_q(axis_values, wavelength)), axis_values
+    return axis_values, np.asarray(q_from_twotheta(axis_values, wavelength))
 
 
 def kinematic_substrate_peak(
@@ -222,25 +244,28 @@ class FitUpdate:
     params: np.ndarray
     density_z: np.ndarray | None = None
     density_rho_e: np.ndarray | None = None
+    show_observed: bool = True
 
 
 def export_result_data(update: FitUpdate, path: Path) -> list[Path]:
     delimiter = "," if path.suffix.lower() == ".csv" else "\t"
+    if update.show_observed:
+        columns = [
+            update.twotheta,
+            update.q,
+            update.observed,
+            update.predicted,
+            update.predicted - update.observed,
+        ]
+        headings = ["twotheta_deg", "q_inv_A", "observed_cps", "fitted_cps", "residual_cps"]
+    else:
+        columns = [update.twotheta, update.q, update.predicted]
+        headings = ["twotheta_deg", "q_inv_A", "simulated_cps"]
     np.savetxt(
         path,
-        np.column_stack(
-            [
-                update.twotheta,
-                update.q,
-                update.observed,
-                update.predicted,
-                update.predicted - update.observed,
-            ]
-        ),
+        np.column_stack(columns),
         delimiter=delimiter,
-        header=delimiter.join(
-            ["twotheta_deg", "q_inv_A", "observed_cps", "fitted_cps", "residual_cps"]
-        ),
+        header=delimiter.join(headings),
         comments="",
     )
     written = [path]
@@ -279,18 +304,19 @@ def save_result_plots(update: FitUpdate, wavelength: float, path: Path) -> list[
         linewidth=1.5,
         label=curve_label,
     )
-    diffraction_axis.plot(
-        update.twotheta,
-        update.observed,
-        linestyle="none",
-        marker="o",
-        markersize=3.5,
-        markerfacecolor="#aeb5dc",
-        markeredgecolor="#6873a8",
-        markeredgewidth=0.5,
-        alpha=0.75,
-        label="Data",
-    )
+    if update.show_observed:
+        diffraction_axis.plot(
+            update.twotheta,
+            update.observed,
+            linestyle="none",
+            marker="o",
+            markersize=3.5,
+            markerfacecolor="#aeb5dc",
+            markeredgecolor="#6873a8",
+            markeredgewidth=0.5,
+            alpha=0.75,
+            label="Data",
+        )
     diffraction_axis.set_yscale("log")
     diffraction_axis.set_xlim(float(np.min(update.twotheta)), float(np.max(update.twotheta)))
     diffraction_axis.set_xlabel(r"$2\theta$ [degrees]")
@@ -348,6 +374,38 @@ def fit_resume_signature(
     start: np.ndarray,
     fit_mask: np.ndarray,
 ) -> tuple[object, ...]:
+    if bool(config.get("stack_enabled", False)):
+        document = copy.deepcopy(config["stack_document"])
+        targets = [
+            str(parameter["target"])
+            for parameter in document.get("fit_parameters", [])
+        ]
+        document["fit_parameters"] = targets
+        document.pop("calculation_ranges", None)
+        layers = {
+            "substrate": document["substrate"],
+            **{
+                str(layer["name"]): layer
+                for layer in document["sequence"]["layers"]
+            },
+            "calculation": document["calculation"],
+        }
+        if document.get("capping_layer") is not None:
+            layers["capping"] = document["capping_layer"]
+        for target in targets:
+            prefix, field = target.split(".", 1)
+            layers[prefix][field] = "<fitted>"
+        return (
+            "superlattice",
+            str(resolve_data_path(str(config["data_path"]))),
+            float(config["twotheta_min"]),
+            float(config["twotheta_max"]),
+            int(config["seed"]),
+            int(config["popsize"]),
+            json.dumps(document, sort_keys=True),
+            tuple(bool(value) for value in fit_mask),
+            tuple(float(value) for value in start[~fit_mask]),
+        )
     film = config["film_settings"]
     substrate = config["substrate_settings"]
     kinematic = config["kinematic_settings"]
@@ -357,6 +415,7 @@ def fit_resume_signature(
         config["model"],
         float(config["wavelength"]),
         config["dynamic_backend"],
+        config.get("density_method", "sampled"),
         int(config.get("density_slices", 100)),
         float(config.get("density_max_q0", 30.0)),
         float(config["twotheta_min"]),
@@ -399,9 +458,12 @@ def fit_update_to_dict(update: FitUpdate) -> dict[str, object]:
         "parameters": update.params.tolist(),
         "twotheta_deg": update.twotheta.tolist(),
         "q_inv_A": update.q.tolist(),
-        "observed_cps": update.observed.tolist(),
+        "show_observed": update.show_observed,
+        "observed_cps": update.observed.tolist() if update.show_observed else None,
         "predicted_cps": update.predicted.tolist(),
-        "residual_cps": (update.predicted - update.observed).tolist(),
+        "residual_cps": (
+            (update.predicted - update.observed).tolist() if update.show_observed else None
+        ),
         "density_z_A": None if update.density_z is None else update.density_z.tolist(),
         "density_real": None if density is None else np.real(density).tolist(),
         "density_imag": None if density is None else np.imag(density).tolist(),
@@ -411,7 +473,13 @@ def fit_update_to_dict(update: FitUpdate) -> dict[str, object]:
 def fit_update_from_dict(data: dict[str, object]) -> FitUpdate:
     twotheta = np.asarray(data["twotheta_deg"], dtype=float)
     q = np.asarray(data["q_inv_A"], dtype=float)
-    observed = np.asarray(data["observed_cps"], dtype=float)
+    show_observed = bool(data.get("show_observed", data.get("observed_cps") is not None))
+    observed_value = data.get("observed_cps")
+    observed = (
+        np.asarray(observed_value, dtype=float)
+        if observed_value is not None
+        else np.zeros_like(twotheta)
+    )
     predicted = np.asarray(data["predicted_cps"], dtype=float)
     if not (len(twotheta) == len(q) == len(observed) == len(predicted)):
         raise ValueError("Saved result arrays have inconsistent lengths")
@@ -437,6 +505,7 @@ def fit_update_from_dict(data: dict[str, object]) -> FitUpdate:
         params=np.asarray(data["parameters"], dtype=float),
         density_z=density_z,
         density_rho_e=density,
+        show_observed=show_observed,
     )
 
 
@@ -655,8 +724,11 @@ def read_experimental_data(data_path: str | Path) -> tuple[np.ndarray, np.ndarra
     except ValueError:
         data = np.loadtxt(path, delimiter=",")
     if data.ndim != 2 or data.shape[1] < 2:
-        raise ValueError("Data file must contain at least two columns: 2theta and intensity")
-    return data[:, 0], data[:, 1]
+        raise ValueError(
+            "Data file must contain 2theta/intensity or 2theta/q/intensity columns"
+        )
+    intensity_column = 2 if data.shape[1] >= 3 else 1
+    return data[:, 0], data[:, intensity_column]
 
 
 def load_sample_data(
@@ -981,6 +1053,7 @@ class FitApp:
         self.active_fit_config: dict[str, object] | None = None
         self.preview_after_id: str | None = None
         self.preview_data_path: Path | None = None
+        self.superlattice_data_preview = False
         self.updating_twotheta_window = False
 
         self.sample_var = tk.StringVar(value="Fe 10 nm")
@@ -1088,6 +1161,7 @@ class FitApp:
         self.dynamic_bkg_b_max_var = tk.StringVar(value="0.1")
         self.dynamic_bkg_b_fit_var = tk.StringVar(value="")
         self.dynamic_backend_var = tk.StringVar(value="auto")
+        self.density_method_var = tk.StringVar(value="sampled")
         self.density_slices_var = tk.StringVar(value="100")
         self.density_max_q0_var = tk.StringVar(value="30.0")
         self.dynamic_resolution_fit_enabled_var = tk.BooleanVar(value=True)
@@ -1143,6 +1217,27 @@ class FitApp:
         self.dynamic_widgets: list[tk.Widget] = []
         self.strain_widgets: list[tk.Widget] = []
         self.range_indicators: list[RangeIndicator] = []
+        default_stack_path = STACK_DIR / "fe_v_4_28_x11.json"
+        self.stack_enabled_var = tk.BooleanVar(value=False)
+        self.stack_path_var = tk.StringVar(value=str(default_stack_path))
+        self.stack_name_var = tk.StringVar()
+        self.stack_repetitions_var = tk.StringVar()
+        self.stack_capping_enabled_var = tk.BooleanVar(value=False)
+        self.stack_points_per_unit_var = tk.StringVar(value="50")
+        self.stack_sampling_label_var = tk.StringVar(value="Points per degree")
+        self.stack_calculation_fit_enabled_vars = {
+            key: tk.BooleanVar(value=False)
+            for key in ("resolution", "intensity_scale", "background_a", "background_b")
+        }
+        self.stack_calculation_fit_vars = {
+            key: tk.StringVar(value="")
+            for key in self.stack_calculation_fit_enabled_vars
+        }
+        self.stack_document = copy.deepcopy(StackDefinition.load(default_stack_path).document)
+        self.stack_row_vars: list[dict[str, tk.Variable]] = []
+        self.stack_row_specs: list[dict[str, object]] = []
+        self.stack_row_roles: list[str] = []
+        self.stack_structure_indicators: list[RangeIndicator] = []
 
         self._set_sample_layer_defaults(SAMPLES[self.sample_var.get()])
         self._set_sample_kinematic_defaults(SAMPLES[self.sample_var.get()])
@@ -1158,6 +1253,7 @@ class FitApp:
         self.model_var.trace_add("write", self._on_model_changed)
         self.strain_var.trace_add("write", self._on_strain_changed)
         self.kin_substrate_var.trace_add("write", self._on_kinematic_substrate_changed)
+        self.stack_enabled_var.trace_add("write", self._on_stack_enabled_changed)
         self.root.after(0, self._draw_experimental_preview)
         self.root.after(150, self._process_queue)
 
@@ -1283,10 +1379,16 @@ class FitApp:
                 row=row, column=column + 1, sticky="ew", padx=(4, 8), pady=2
             )
 
-        ttk.Checkbutton(run_frame, text="Include strain", variable=self.strain_var).grid(
+        self.strain_checkbutton = ttk.Checkbutton(
+            run_frame, text="Include strain", variable=self.strain_var
+        )
+        self.strain_checkbutton.grid(
             row=4, column=0, columnspan=2, sticky="w", pady=(4, 2)
         )
-        ttk.Checkbutton(run_frame, text="Include roughness", variable=self.roughness_var).grid(
+        self.roughness_checkbutton = ttk.Checkbutton(
+            run_frame, text="Include roughness", variable=self.roughness_var
+        )
+        self.roughness_checkbutton.grid(
             row=4, column=2, columnspan=2, sticky="w", pady=(4, 2)
         )
 
@@ -1372,8 +1474,8 @@ class FitApp:
                 self.kin_resolution_fit_var,
             ),
             ("Intensity scale", self.kin_scale_fit_enabled_var, self.kin_scale_start_var, self.kin_scale_min_var, self.kin_scale_max_var, self.kin_scale_fit_var),
-            ("Background offset", self.kin_bkg_a_fit_enabled_var, self.kin_bkg_a_start_var, self.kin_bkg_a_min_var, self.kin_bkg_a_max_var, self.kin_bkg_a_fit_var),
-            ("Background slope", self.kin_bkg_b_fit_enabled_var, self.kin_bkg_b_start_var, self.kin_bkg_b_min_var, self.kin_bkg_b_max_var, self.kin_bkg_b_fit_var),
+            ("Background slope (a)", self.kin_bkg_a_fit_enabled_var, self.kin_bkg_a_start_var, self.kin_bkg_a_min_var, self.kin_bkg_a_max_var, self.kin_bkg_a_fit_var),
+            ("Background offset (b)", self.kin_bkg_b_fit_enabled_var, self.kin_bkg_b_start_var, self.kin_bkg_b_min_var, self.kin_bkg_b_max_var, self.kin_bkg_b_fit_var),
         ]
         for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(kinematic_controls, start=1):
             ttk.Label(self.kinematic_frame, text=label).grid(row=row, column=0, sticky="w")
@@ -1545,23 +1647,33 @@ class FitApp:
             state="readonly",
             width=10,
         ).grid(row=0, column=2, sticky="w")
-        ttk.Label(self.dynamic_fit_frame, text="Density slices per cell").grid(
+        ttk.Label(self.dynamic_fit_frame, text="Density method").grid(
             row=1, column=0, sticky="w"
         )
-        ttk.Entry(
-            self.dynamic_fit_frame, textvariable=self.density_slices_var, width=10
+        ttk.Combobox(
+            self.dynamic_fit_frame,
+            textvariable=self.density_method_var,
+            values=("sampled", "analytic"),
+            state="readonly",
+            width=10,
         ).grid(row=1, column=2, sticky="w")
-        ttk.Label(self.dynamic_fit_frame, text="Density Q max (1/Å)").grid(
+        ttk.Label(self.dynamic_fit_frame, text="Density slices per cell").grid(
             row=2, column=0, sticky="w"
         )
         ttk.Entry(
-            self.dynamic_fit_frame, textvariable=self.density_max_q0_var, width=10
+            self.dynamic_fit_frame, textvariable=self.density_slices_var, width=10
         ).grid(row=2, column=2, sticky="w")
-        ttk.Label(self.dynamic_fit_frame, text="Fit").grid(row=3, column=1, sticky="ew")
-        ttk.Label(self.dynamic_fit_frame, text="Value").grid(row=3, column=2, sticky="ew")
-        ttk.Label(self.dynamic_fit_frame, text="Min").grid(row=3, column=3, sticky="ew")
-        ttk.Label(self.dynamic_fit_frame, text="Max").grid(row=3, column=4, sticky="ew")
-        ttk.Label(self.dynamic_fit_frame, text="Range").grid(row=3, column=5, sticky="ew")
+        ttk.Label(self.dynamic_fit_frame, text="Density Q max (1/Å)").grid(
+            row=3, column=0, sticky="w"
+        )
+        ttk.Entry(
+            self.dynamic_fit_frame, textvariable=self.density_max_q0_var, width=10
+        ).grid(row=3, column=2, sticky="w")
+        ttk.Label(self.dynamic_fit_frame, text="Fit").grid(row=4, column=1, sticky="ew")
+        ttk.Label(self.dynamic_fit_frame, text="Value").grid(row=4, column=2, sticky="ew")
+        ttk.Label(self.dynamic_fit_frame, text="Min").grid(row=4, column=3, sticky="ew")
+        ttk.Label(self.dynamic_fit_frame, text="Max").grid(row=4, column=4, sticky="ew")
+        ttk.Label(self.dynamic_fit_frame, text="Range").grid(row=4, column=5, sticky="ew")
         dynamic_fit_controls = [
             (
                 "Resolution (deg)",
@@ -1580,7 +1692,7 @@ class FitApp:
                 self.dynamic_intensity_fit_var,
             ),
             (
-                "Background offset",
+                "Background slope (a)",
                 self.dynamic_bkg_a_fit_enabled_var,
                 self.dynamic_bkg_a_start_var,
                 self.dynamic_bkg_a_min_var,
@@ -1588,7 +1700,7 @@ class FitApp:
                 self.dynamic_bkg_a_fit_var,
             ),
             (
-                "Background slope",
+                "Background offset (b)",
                 self.dynamic_bkg_b_fit_enabled_var,
                 self.dynamic_bkg_b_start_var,
                 self.dynamic_bkg_b_min_var,
@@ -1596,7 +1708,7 @@ class FitApp:
                 self.dynamic_bkg_b_fit_var,
             ),
         ]
-        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(dynamic_fit_controls, start=4):
+        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(dynamic_fit_controls, start=5):
             ttk.Label(self.dynamic_fit_frame, text=label).grid(row=row, column=0, sticky="w")
             ttk.Checkbutton(self.dynamic_fit_frame, variable=fit_enabled_var).grid(row=row, column=1, sticky="ew")
             ttk.Entry(self.dynamic_fit_frame, textvariable=start_var, width=7).grid(row=row, column=2, sticky="ew")
@@ -1780,6 +1892,249 @@ class FitApp:
         optimization_frame.columnconfigure(1, weight=1)
         optimization_frame.columnconfigure(3, weight=1)
 
+        stack_container = ttk.LabelFrame(sidebar, text="Superlattice simulation and fitting")
+        stack_container.pack(fill=tk.X, pady=(0, 8))
+        self._add_accent_strip(stack_container, UI_COLORS["stack"])
+        ttk.Checkbutton(
+            stack_container,
+            text="Use superlattice (replaces film/substrate layers)",
+            variable=self.stack_enabled_var,
+        ).pack(anchor="w", padx=8, pady=(6, 2))
+        stack_tabs = ttk.Notebook(stack_container)
+        stack_tabs.pack(fill=tk.X, padx=4, pady=(0, 4))
+
+        stack_structure_panel = ttk.Frame(stack_tabs, padding=8, style="Panel.TFrame")
+        stack_tabs.add(stack_structure_panel, text="Structure")
+        ttk.Label(stack_structure_panel, text="Superlattice file").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Entry(stack_structure_panel, textvariable=self.stack_path_var).grid(
+            row=0, column=1, columnspan=3, sticky="ew", padx=(4, 0)
+        )
+        ttk.Button(stack_structure_panel, text="Browse...", command=self._browse_stack_file).grid(
+            row=1, column=1, sticky="ew", padx=(4, 2), pady=3
+        )
+        ttk.Button(stack_structure_panel, text="Reload", command=self._load_stack_file).grid(
+            row=1, column=2, sticky="ew", padx=2, pady=3
+        )
+        ttk.Button(stack_structure_panel, text="Save as...", command=self._save_stack_file).grid(
+            row=1, column=3, sticky="ew", padx=(2, 0), pady=3
+        )
+        ttk.Label(stack_structure_panel, text="Superlattice data").grid(
+            row=2, column=0, sticky="w"
+        )
+        ttk.Entry(stack_structure_panel, textvariable=self.data_path_var).grid(
+            row=2, column=1, columnspan=3, sticky="ew", padx=(4, 4), pady=2
+        )
+        ttk.Button(
+            stack_structure_panel,
+            text="Load data...",
+            command=self._browse_superlattice_data_file,
+        ).grid(row=2, column=4, sticky="ew", pady=2)
+        ttk.Label(stack_structure_panel, text="Superlattice name").grid(
+            row=3, column=0, sticky="w"
+        )
+        ttk.Entry(stack_structure_panel, textvariable=self.stack_name_var).grid(
+            row=3, column=1, columnspan=2, sticky="ew", padx=(4, 8), pady=2
+        )
+        ttk.Label(stack_structure_panel, text="Repetitions").grid(row=3, column=3, sticky="e")
+        ttk.Spinbox(
+            stack_structure_panel,
+            textvariable=self.stack_repetitions_var,
+            from_=1,
+            to=10000,
+            width=6,
+        ).grid(row=3, column=4, sticky="ew", padx=(4, 0), pady=2)
+        ttk.Checkbutton(
+            stack_structure_panel,
+            text="Include capping layer",
+            variable=self.stack_capping_enabled_var,
+            command=self._on_stack_capping_changed,
+        ).grid(row=4, column=1, columnspan=3, sticky="w", padx=(4, 0), pady=2)
+        stack_layers_scroller = ttk.Frame(stack_structure_panel, style="Panel.TFrame")
+        stack_layers_scroller.grid(
+            row=5, column=0, columnspan=5, sticky="nsew", pady=(6, 4)
+        )
+        self.stack_layers_canvas = tk.Canvas(
+            stack_layers_scroller,
+            height=260,
+            background=UI_COLORS["panel"],
+            highlightthickness=0,
+        )
+        stack_layers_scrollbar = ttk.Scrollbar(
+            stack_layers_scroller,
+            orient=tk.VERTICAL,
+            command=self.stack_layers_canvas.yview,
+        )
+        self.stack_layers_canvas.configure(yscrollcommand=stack_layers_scrollbar.set)
+        self.stack_layers_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        stack_layers_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.stack_layers_frame = ttk.Frame(
+            self.stack_layers_canvas, style="Panel.TFrame"
+        )
+        stack_layers_window = self.stack_layers_canvas.create_window(
+            (0, 0), window=self.stack_layers_frame, anchor="nw"
+        )
+        self.stack_layers_frame.bind(
+            "<Configure>",
+            lambda _event: self.stack_layers_canvas.configure(
+                scrollregion=self.stack_layers_canvas.bbox("all")
+            ),
+        )
+        self.stack_layers_canvas.bind(
+            "<Configure>",
+            lambda event: self.stack_layers_canvas.itemconfigure(
+                stack_layers_window, width=event.width
+            ),
+        )
+        self._populate_stack_rows(self.stack_document)
+        ttk.Button(
+            stack_structure_panel,
+            text="Add repeated layer",
+            command=self._add_stack_layer,
+        ).grid(
+            row=6, column=1, sticky="ew", padx=(4, 2), pady=2
+        )
+        ttk.Button(
+            stack_structure_panel,
+            text="Remove last repeated layer",
+            command=self._remove_stack_layer,
+        ).grid(row=6, column=2, columnspan=2, sticky="ew", padx=(2, 0), pady=2)
+        for column in (1, 2, 3):
+            stack_structure_panel.columnconfigure(column, weight=1)
+        stack_structure_panel.rowconfigure(5, weight=1)
+
+        stack_calculation_panel = ttk.Frame(stack_tabs, padding=8, style="Panel.TFrame")
+        stack_tabs.add(stack_calculation_panel, text="Calculation")
+        for column, label in ((1, "Fit"), (2, "Value"), (3, "Min"), (4, "Max"), (5, "Range")):
+            ttk.Label(stack_calculation_panel, text=label).grid(
+                row=0, column=column, sticky="ew"
+            )
+
+        def add_stack_calculation_row(
+            row: int,
+            key: str,
+            label: str | tk.StringVar,
+            value_var: tk.StringVar,
+            min_var: tk.StringVar,
+            max_var: tk.StringVar,
+        ) -> tuple[list[tk.Widget], tuple[ttk.Entry, ttk.Entry, ttk.Entry], RangeIndicator]:
+            label_widget = ttk.Label(
+                stack_calculation_panel,
+                textvariable=label if isinstance(label, tk.StringVar) else None,
+                text="" if isinstance(label, tk.StringVar) else label,
+            )
+            label_widget.grid(row=row, column=0, sticky="w", pady=2)
+            fit_checkbutton = ttk.Checkbutton(
+                stack_calculation_panel,
+                variable=self.stack_calculation_fit_enabled_vars[key],
+            )
+            fit_checkbutton.grid(row=row, column=1, sticky="ew", pady=2)
+            entries = tuple(
+                ttk.Entry(stack_calculation_panel, textvariable=variable, width=9)
+                for variable in (value_var, min_var, max_var)
+            )
+            for column, entry in zip((2, 3, 4), entries):
+                entry.grid(row=row, column=column, sticky="ew", padx=(4, 0), pady=2)
+            self._add_range_indicator(
+                stack_calculation_panel,
+                row,
+                str(label),
+                value_var,
+                min_var,
+                max_var,
+                self.stack_calculation_fit_vars[key],
+                self.stack_calculation_fit_enabled_vars[key],
+            )
+            indicator = self.range_indicators[-1]
+            return [label_widget, fit_checkbutton, *entries, indicator.canvas], entries, indicator
+
+        ttk.Label(
+            stack_calculation_panel, textvariable=self.stack_sampling_label_var
+        ).grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Entry(
+            stack_calculation_panel,
+            textvariable=self.stack_points_per_unit_var,
+            width=9,
+        ).grid(row=1, column=2, sticky="ew", padx=(4, 0), pady=2)
+
+        self.stack_calculation_entries: list[ttk.Entry] = []
+        self.stack_calculation_min_entries: list[ttk.Entry] = []
+        self.stack_calculation_max_entries: list[ttk.Entry] = []
+        self.stack_model_calculation_indicators: list[RangeIndicator] = []
+        dynamic_rows = (
+            ("resolution", "Resolution (deg)", self.dynamic_resolution_start_var, self.dynamic_resolution_min_var, self.dynamic_resolution_max_var),
+            ("intensity_scale", "Intensity scale", self.dynamic_intensity_start_var, self.dynamic_intensity_min_var, self.dynamic_intensity_max_var),
+            ("background_a", "Background slope (a)", self.dynamic_bkg_a_start_var, self.dynamic_bkg_a_min_var, self.dynamic_bkg_a_max_var),
+            ("background_b", "Background offset (b)", self.dynamic_bkg_b_start_var, self.dynamic_bkg_b_min_var, self.dynamic_bkg_b_max_var),
+        )
+        for row, values in enumerate(dynamic_rows, start=2):
+            _widgets, entries, indicator = add_stack_calculation_row(row, *values)
+            self.stack_calculation_entries.append(entries[0])
+            self.stack_calculation_min_entries.append(entries[1])
+            self.stack_calculation_max_entries.append(entries[2])
+            self.stack_model_calculation_indicators.append(indicator)
+
+        self.stack_dynamic_calculation_widgets: list[tk.Widget] = []
+        backend_label = ttk.Label(stack_calculation_panel, text="Dynamic backend")
+        backend_label.grid(row=6, column=0, sticky="w", pady=2)
+        backend_widget = ttk.Combobox(
+            stack_calculation_panel,
+            textvariable=self.dynamic_backend_var,
+            values=("auto", "reflection", "fused", "legacy"),
+            state="readonly",
+            width=12,
+        )
+        backend_widget.grid(row=6, column=2, columnspan=3, sticky="ew", padx=(4, 0), pady=2)
+        self.stack_dynamic_calculation_widgets.extend((backend_label, backend_widget))
+        density_method_label = ttk.Label(stack_calculation_panel, text="Density method")
+        density_method_label.grid(row=7, column=0, sticky="w", pady=2)
+        density_method_widget = ttk.Combobox(
+            stack_calculation_panel,
+            textvariable=self.density_method_var,
+            values=("sampled", "analytic"),
+            state="readonly",
+            width=12,
+        )
+        density_method_widget.grid(
+            row=7, column=2, columnspan=3, sticky="ew", padx=(4, 0), pady=2
+        )
+        self.stack_dynamic_calculation_widgets.extend(
+            (density_method_label, density_method_widget)
+        )
+        for row, label, variable in (
+            (8, "Density slices per cell", self.density_slices_var),
+            (9, "Density Q max (1/Å)", self.density_max_q0_var),
+        ):
+            label_widget = ttk.Label(stack_calculation_panel, text=label)
+            label_widget.grid(row=row, column=0, sticky="w", pady=2)
+            entry = ttk.Entry(stack_calculation_panel, textvariable=variable, width=9)
+            entry.grid(row=row, column=2, sticky="ew", padx=(4, 0), pady=2)
+            self.stack_dynamic_calculation_widgets.extend((label_widget, entry))
+        for column in (2, 3, 4, 5):
+            stack_calculation_panel.columnconfigure(column, weight=1)
+
+        kinematic_trace_vars = (
+            self.kin_resolution_start_var,
+            self.kin_resolution_min_var,
+            self.kin_resolution_max_var,
+            self.kin_resolution_fit_var,
+            self.kin_scale_start_var,
+            self.kin_scale_min_var,
+            self.kin_scale_max_var,
+            self.kin_scale_fit_var,
+            self.kin_bkg_a_start_var,
+            self.kin_bkg_a_min_var,
+            self.kin_bkg_a_max_var,
+            self.kin_bkg_a_fit_var,
+            self.kin_bkg_b_start_var,
+            self.kin_bkg_b_min_var,
+            self.kin_bkg_b_max_var,
+            self.kin_bkg_b_fit_var,
+        )
+        for variable in kinematic_trace_vars:
+            variable.trace_add("write", self._redraw_stack_model_calculation_indicators)
+
         summary_frame = ttk.LabelFrame(sidebar, text="Fit results")
         summary_frame.pack(fill=tk.X)
         self._add_accent_strip(summary_frame, UI_COLORS["setup"])
@@ -1860,9 +2215,10 @@ class FitApp:
         max_var: tk.StringVar,
         fit_var: tk.StringVar,
         fit_enabled_var: tk.BooleanVar | None = None,
+        column: int = 5,
     ) -> None:
         canvas = tk.Canvas(parent, width=96, height=20, highlightthickness=0, bg="#f5f5f5")
-        canvas.grid(row=row, column=5, sticky="ew", padx=(4, 0))
+        canvas.grid(row=row, column=column, sticky="ew", padx=(4, 0))
         indicator = RangeIndicator(name, canvas, start_var, min_var, max_var, fit_var, fit_enabled_var)
         self.range_indicators.append(indicator)
 
@@ -1936,11 +2292,594 @@ class FitApp:
             except tk.TclError:
                 pass
 
+    def _populate_stack_rows(self, document: dict[str, object]) -> None:
+        for indicator in self.stack_structure_indicators:
+            if indicator in self.range_indicators:
+                self.range_indicators.remove(indicator)
+        self.stack_structure_indicators.clear()
+        for child in self.stack_layers_frame.winfo_children():
+            child.destroy()
+        self.stack_document = copy.deepcopy(document)
+        self.stack_name_var.set(str(document["name"]))
+        sequence = document["sequence"]
+        self.stack_repetitions_var.set(str(sequence["repetitions"]))
+        capping_layer = document.get("capping_layer")
+        self.stack_capping_enabled_var.set(capping_layer is not None)
+        self.stack_row_specs = [
+            copy.deepcopy(document["substrate"]),
+            *(copy.deepcopy(layer) for layer in sequence["layers"]),
+            *([] if capping_layer is None else [copy.deepcopy(capping_layer)]),
+        ]
+        self.stack_row_roles = [
+            "substrate",
+            *("repeat" for _layer in sequence["layers"]),
+            *([] if capping_layer is None else ["capping"]),
+        ]
+        self.stack_row_vars.clear()
+        fit_parameters = {
+            str(parameter["target"]): parameter
+            for parameter in document.get("fit_parameters", [])
+        }
+        for column, (label, width) in enumerate(
+            (
+                ("Role", 8),
+                ("Name / parameter", 13),
+                ("Structure / fit", 14),
+                ("Dir / value", 8),
+                ("Cells / min", 8),
+                ("Max", 7),
+                ("Range", 12),
+            )
+        ):
+            ttk.Label(self.stack_layers_frame, text=label, width=width).grid(
+                row=0, column=column, sticky="ew", padx=1
+            )
+
+        def default_bounds(key: str, value: float) -> tuple[float, float]:
+            if key == "dinterface":
+                return max(0.0, value - 0.5), value + 0.5
+            if key == "scale":
+                return 0.9, 1.1
+            return 0.5, 1.5
+
+        for index, (role, spec) in enumerate(
+            zip(self.stack_row_roles, self.stack_row_specs)
+        ):
+            row = 1 + index * 4
+            is_substrate = role == "substrate"
+            prefix = role if role in {"substrate", "capping"} else str(spec["name"])
+            variables = {
+                "name": tk.StringVar(value="substrate" if is_substrate else str(spec["name"])),
+                "filename": tk.StringVar(value=str(spec["filename"])),
+                "direction": tk.StringVar(value=str(spec["direction"])),
+                "unit_cells": tk.StringVar(value=str(spec["unit_cells"])),
+                "dinterface": tk.StringVar(value=str(spec.get("dinterface", 0.0))),
+                "scale": tk.StringVar(value=str(spec.get("scale", 1.0))),
+                "area_scale": tk.StringVar(value=str(spec.get("area_scale", 1.0))),
+            }
+            for key in ("dinterface", "scale", "area_scale"):
+                value = float(variables[key].get())
+                parameter = fit_parameters.get(f"{prefix}.{key}")
+                lower, upper = (
+                    (float(parameter["min"]), float(parameter["max"]))
+                    if parameter is not None
+                    else default_bounds(key, value)
+                )
+                variables[f"{key}_min"] = tk.StringVar(value=f"{lower:g}")
+                variables[f"{key}_max"] = tk.StringVar(value=f"{upper:g}")
+                variables[f"{key}_fit"] = tk.StringVar(value="")
+                variables[f"{key}_fit_enabled"] = tk.BooleanVar(value=parameter is not None)
+            self.stack_row_vars.append(variables)
+            ttk.Label(
+                self.stack_layers_frame,
+                text={"substrate": "Substrate", "repeat": "Repeat", "capping": "Capping"}[role],
+            ).grid(row=row, column=0, sticky="w", padx=1, pady=1)
+            ttk.Entry(
+                self.stack_layers_frame,
+                textvariable=variables["name"],
+                width=8,
+                state=tk.DISABLED if is_substrate else tk.NORMAL,
+            ).grid(row=row, column=1, sticky="ew", padx=1, pady=1)
+            ttk.Combobox(
+                self.stack_layers_frame,
+                textvariable=variables["filename"],
+                values=POSCAR_FILES,
+                state="readonly",
+                width=18,
+            ).grid(row=row, column=2, sticky="ew", padx=1, pady=1)
+            ttk.Combobox(
+                self.stack_layers_frame,
+                textvariable=variables["direction"],
+                values=("1", "2", "3"),
+                state="readonly",
+                width=4,
+            ).grid(row=row, column=3, sticky="ew", padx=1, pady=1)
+            ttk.Entry(
+                self.stack_layers_frame,
+                textvariable=variables["unit_cells"],
+                width=8,
+            ).grid(row=row, column=4, sticky="ew", padx=1, pady=1)
+
+            for offset, (key, label) in enumerate(
+                (
+                    ("dinterface", "Interface (A)"),
+                    ("scale", "Lattice scale"),
+                    ("area_scale", "Area scale"),
+                ),
+                start=1,
+            ):
+                parameter_row = row + offset
+                ttk.Label(self.stack_layers_frame, text=label).grid(
+                    row=parameter_row, column=1, sticky="w", padx=1, pady=1
+                )
+                ttk.Checkbutton(
+                    self.stack_layers_frame,
+                    variable=variables[f"{key}_fit_enabled"],
+                ).grid(row=parameter_row, column=2, sticky="ew", padx=1, pady=1)
+                for column, variable_key in (
+                    (3, key),
+                    (4, f"{key}_min"),
+                    (5, f"{key}_max"),
+                ):
+                    ttk.Entry(
+                        self.stack_layers_frame,
+                        textvariable=variables[variable_key],
+                        width=8,
+                    ).grid(row=parameter_row, column=column, sticky="ew", padx=1, pady=1)
+                self._add_range_indicator(
+                    self.stack_layers_frame,
+                    parameter_row,
+                    f"{prefix} {label}",
+                    variables[key],
+                    variables[f"{key}_min"],
+                    variables[f"{key}_max"],
+                    variables[f"{key}_fit"],
+                    variables[f"{key}_fit_enabled"],
+                    column=6,
+                )
+                self.stack_structure_indicators.append(self.range_indicators[-1])
+        self.stack_layers_frame.columnconfigure(2, weight=1)
+        self.stack_layers_frame.columnconfigure(6, weight=1)
+
+    def _stack_calculation_triplets(self) -> dict[str, tuple[float, float, float]]:
+        model_variables = (
+            (
+                ("resolution", self.dynamic_resolution_start_var, self.dynamic_resolution_min_var, self.dynamic_resolution_max_var),
+                ("intensity_scale", self.dynamic_intensity_start_var, self.dynamic_intensity_min_var, self.dynamic_intensity_max_var),
+                ("background_a", self.dynamic_bkg_a_start_var, self.dynamic_bkg_a_min_var, self.dynamic_bkg_a_max_var),
+                ("background_b", self.dynamic_bkg_b_start_var, self.dynamic_bkg_b_min_var, self.dynamic_bkg_b_max_var),
+            )
+            if self.model_var.get() == "Dynamic"
+            else (
+                ("resolution", self.kin_resolution_start_var, self.kin_resolution_min_var, self.kin_resolution_max_var),
+                ("intensity_scale", self.kin_scale_start_var, self.kin_scale_min_var, self.kin_scale_max_var),
+                ("background_a", self.kin_bkg_a_start_var, self.kin_bkg_a_min_var, self.kin_bkg_a_max_var),
+                ("background_b", self.kin_bkg_b_start_var, self.kin_bkg_b_min_var, self.kin_bkg_b_max_var),
+            )
+        )
+        return {
+            name: (float(value.get()), float(minimum.get()), float(maximum.get()))
+            for name, value, minimum, maximum in model_variables
+        }
+
+    def _stack_document_from_controls(
+        self, allow_outside_start: bool = False
+    ) -> dict[str, object]:
+        if "repeat" not in self.stack_row_roles:
+            raise ValueError("A superlattice requires a substrate and at least one repeated layer")
+        document = copy.deepcopy(self.stack_document)
+        document["name"] = self.stack_name_var.get().strip()
+        document["model"] = self.model_var.get().lower()
+        document["wavelength"] = self._parse_wavelength()
+        fit_parameters: list[dict[str, object]] = []
+        sequence = document["sequence"]
+        sequence["repetitions"] = int(self.stack_repetitions_var.get())
+
+        substrate_spec: dict[str, object] | None = None
+        repeated_specs: list[dict[str, object]] = []
+        capping_spec: dict[str, object] | None = None
+        for role, base, variables in zip(
+            self.stack_row_roles, self.stack_row_specs, self.stack_row_vars
+        ):
+            spec = copy.deepcopy(base)
+            prefix = role if role in {"substrate", "capping"} else variables["name"].get().strip()
+            if role != "substrate":
+                spec["name"] = prefix
+                if role == "capping":
+                    spec["name"] = variables["name"].get().strip()
+                spec.pop("monolayers", None)
+            spec["filename"] = variables["filename"].get().strip()
+            spec["direction"] = int(variables["direction"].get())
+            spec["unit_cells"] = float(variables["unit_cells"].get())
+            spec["dinterface"] = float(variables["dinterface"].get())
+            spec["scale"] = float(variables["scale"].get())
+            spec["area_scale"] = float(variables["area_scale"].get())
+            if spec["dinterface"] < 0 or spec["scale"] <= 0 or spec["area_scale"] <= 0:
+                raise ValueError(
+                    f"{prefix} interface must be non-negative; scale and area scale must be positive"
+                )
+            for key in ("dinterface", "scale", "area_scale"):
+                if not variables[f"{key}_fit_enabled"].get():
+                    continue
+                values = (
+                    float(spec[key]),
+                    float(variables[f"{key}_min"].get()),
+                    float(variables[f"{key}_max"].get()),
+                )
+                validate_start_min_max(
+                    f"{prefix} {key}",
+                    *values,
+                    allow_outside_start=allow_outside_start,
+                )
+                if values[1] >= values[2]:
+                    raise ValueError(f"{prefix} {key}: min must be less than max")
+                if key == "dinterface" and values[1] < 0:
+                    raise ValueError(f"{prefix} interface minimum must be non-negative")
+                if key != "dinterface" and values[1] <= 0:
+                    raise ValueError(f"{prefix} {key} minimum must be positive")
+                if allow_outside_start:
+                    spec[key] = float(np.clip(values[0], values[1], values[2]))
+                fit_parameters.append(
+                    {"target": f"{prefix}.{key}", "min": values[1], "max": values[2]}
+                )
+            if role == "substrate":
+                substrate_spec = spec
+            elif role == "capping":
+                capping_spec = spec
+            else:
+                repeated_specs.append(spec)
+        document["substrate"] = substrate_spec
+        sequence["layers"] = repeated_specs
+        if capping_spec is None:
+            document.pop("capping_layer", None)
+        else:
+            document["capping_layer"] = capping_spec
+
+        calculation = dict(document.get("calculation", {}))
+        if self.model_var.get() == "Dynamic":
+            calculation.update(
+                resolution=float(self.dynamic_resolution_start_var.get()),
+                intensity_scale=float(self.dynamic_intensity_start_var.get()),
+                background_a=float(self.dynamic_bkg_a_start_var.get()),
+                background_b=float(self.dynamic_bkg_b_start_var.get()),
+            )
+        else:
+            calculation.update(
+                resolution=float(self.kin_resolution_start_var.get()),
+                intensity_scale=float(self.kin_scale_start_var.get()),
+                background_a=float(self.kin_bkg_a_start_var.get()),
+                background_b=float(self.kin_bkg_b_start_var.get()),
+            )
+        calculation.update(
+            dynamic_backend=self.dynamic_backend_var.get().strip().lower(),
+            density_method=self.density_method_var.get().strip().lower(),
+            density_slices=int(self.density_slices_var.get()),
+            density_max_q0=float(self.density_max_q0_var.get()),
+        )
+        points_per_unit = float(self.stack_points_per_unit_var.get())
+        if points_per_unit <= 0:
+            raise ValueError("Superlattice simulation points per axis unit must be positive")
+        calculation["q_step" if self._axis_is_q() else "twotheta_step"] = 1.0 / points_per_unit
+        document["calculation"] = calculation
+        calculation_triplets = self._stack_calculation_triplets()
+        for name in ("resolution", "intensity_scale"):
+            if calculation_triplets[name][0] <= 0:
+                raise ValueError(
+                    f"Superlattice {name.replace('_', ' ')} must be positive"
+                )
+        for name, values in calculation_triplets.items():
+            if not self.stack_calculation_fit_enabled_vars[name].get():
+                continue
+            validate_start_min_max(
+                name.replace("_", " "),
+                *values,
+                allow_outside_start=allow_outside_start,
+            )
+            if values[1] >= values[2]:
+                raise ValueError(
+                    f"Superlattice {name.replace('_', ' ')}: min must be less than max"
+                )
+            if name in {"resolution", "intensity_scale"} and values[1] <= 0:
+                raise ValueError(
+                    f"Superlattice {name.replace('_', ' ')} minimum must be positive"
+                )
+            if allow_outside_start:
+                calculation[name] = float(np.clip(values[0], values[1], values[2]))
+            fit_parameters.append(
+                {
+                    "target": f"calculation.{name}",
+                    "min": values[1],
+                    "max": values[2],
+                }
+            )
+        document["calculation_ranges"] = {
+            name: [values[1], values[2]] for name, values in calculation_triplets.items()
+        }
+        document["fit_parameters"] = fit_parameters
+        StackDefinition(Path(self.stack_path_var.get()), document)
+        return document
+
+    def _set_stack_document(self, document: dict[str, object], sync_calculation: bool) -> None:
+        self._populate_stack_rows(document)
+        fit_parameters = {
+            str(parameter["target"]): parameter
+            for parameter in document.get("fit_parameters", [])
+        }
+        for name, variable in self.stack_calculation_fit_enabled_vars.items():
+            variable.set(f"calculation.{name}" in fit_parameters)
+        if not sync_calculation:
+            return
+        model = str(document.get("model", "kinematic")).title()
+        self.model_var.set(model)
+        self.wavelength_var.set(str(document.get("wavelength", CU_K_ALPHA_WAVELENGTH)))
+        calculation = document.get("calculation", {})
+        targets = (
+            (
+                self.dynamic_resolution_start_var,
+                self.dynamic_intensity_start_var,
+                self.dynamic_bkg_a_start_var,
+                self.dynamic_bkg_b_start_var,
+            )
+            if model == "Dynamic"
+            else (
+                self.kin_resolution_start_var,
+                self.kin_scale_start_var,
+                self.kin_bkg_a_start_var,
+                self.kin_bkg_b_start_var,
+            )
+        )
+        for variable, key in zip(
+            targets, ("resolution", "intensity_scale", "background_a", "background_b")
+        ):
+            if key in calculation:
+                variable.set(str(calculation[key]))
+        for variable, key in (
+            (self.dynamic_backend_var, "dynamic_backend"),
+            (self.density_method_var, "density_method"),
+            (self.density_slices_var, "density_slices"),
+            (self.density_max_q0_var, "density_max_q0"),
+        ):
+            if key in calculation:
+                variable.set(str(calculation[key]))
+        step = calculation.get("q_step" if self._axis_is_q() else "twotheta_step")
+        if step is not None and float(step) > 0:
+            self.stack_points_per_unit_var.set(f"{1.0 / float(step):.8g}")
+        ranges = document.get("calculation_ranges", {})
+        model_range_variables = (
+            {
+                "resolution": (self.dynamic_resolution_min_var, self.dynamic_resolution_max_var),
+                "intensity_scale": (self.dynamic_intensity_min_var, self.dynamic_intensity_max_var),
+                "background_a": (self.dynamic_bkg_a_min_var, self.dynamic_bkg_a_max_var),
+                "background_b": (self.dynamic_bkg_b_min_var, self.dynamic_bkg_b_max_var),
+            }
+            if model == "Dynamic"
+            else {
+                "resolution": (self.kin_resolution_min_var, self.kin_resolution_max_var),
+                "intensity_scale": (self.kin_scale_min_var, self.kin_scale_max_var),
+                "background_a": (self.kin_bkg_a_min_var, self.kin_bkg_a_max_var),
+                "background_b": (self.kin_bkg_b_min_var, self.kin_bkg_b_max_var),
+            }
+        )
+        range_variables = model_range_variables
+        range_value_variables = {
+            "resolution": targets[0],
+            "intensity_scale": targets[1],
+            "background_a": targets[2],
+            "background_b": targets[3],
+        }
+        for name, variables in range_variables.items():
+            parameter = fit_parameters.get(f"calculation.{name}")
+            values = ranges.get(name)
+            if parameter is not None:
+                values = [parameter["min"], parameter["max"]]
+            if isinstance(values, list) and len(values) == 2:
+                variables[0].set(str(values[0]))
+                variables[1].set(str(values[1]))
+            elif name in range_value_variables:
+                value = float(range_value_variables[name].get())
+                variables[0].set(str(min(float(variables[0].get()), value)))
+                variables[1].set(str(max(float(variables[1].get()), value)))
+
+    def _browse_stack_file(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Choose GenL superlattice file",
+            initialdir=str(STACK_DIR),
+            filetypes=[("GenL superlattice", "*.json"), ("All files", "*")],
+        )
+        if selected:
+            self.stack_path_var.set(selected)
+            self._load_stack_file()
+
+    def _browse_superlattice_data_file(self) -> None:
+        current_path = resolve_data_path(self.data_path_var.get())
+        selected = filedialog.askopenfilename(
+            title="Choose superlattice data file",
+            initialdir=str(
+                current_path.parent if current_path.parent.exists() else EXAMPLE_DATA_DIR
+            ),
+            filetypes=[("Text data", "*.txt *.dat *.csv"), ("All files", "*")],
+        )
+        if not selected:
+            return
+        try:
+            twotheta, _observed = read_experimental_data(selected)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Cannot load superlattice data", str(exc))
+            return
+        self.data_path_var.set(selected)
+        self.superlattice_data_preview = True
+        self._set_twotheta_window(twotheta)
+        self.preview_data_path = Path(selected).resolve()
+        if self.preview_after_id is not None:
+            self.root.after_cancel(self.preview_after_id)
+            self.preview_after_id = None
+        self._draw_experimental_preview()
+        self.status_var.set(
+            f"Loaded superlattice data: {Path(selected).name} ({len(twotheta)} points)"
+        )
+
+    def _load_stack_file(self) -> None:
+        try:
+            definition = StackDefinition.load(self.stack_path_var.get())
+            self.stack_path_var.set(str(definition.path))
+            self._set_stack_document(definition.document, sync_calculation=True)
+            self.status_var.set(f"Loaded superlattice: {definition.name}")
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            messagebox.showerror("Cannot load superlattice", str(exc))
+
+    def _save_stack_file(self) -> None:
+        try:
+            document = self._stack_document_from_controls()
+        except (TypeError, ValueError) as exc:
+            messagebox.showerror("Cannot save superlattice", str(exc))
+            return
+        selected = filedialog.asksaveasfilename(
+            title="Save GenL superlattice",
+            initialdir=str(STACK_DIR),
+            initialfile=Path(self.stack_path_var.get()).name,
+            defaultextension=".json",
+            filetypes=[("GenL superlattice", "*.json"), ("All files", "*")],
+        )
+        if not selected:
+            return
+        try:
+            with Path(selected).open("w", encoding="utf-8") as handle:
+                json.dump(document, handle, indent=2, ensure_ascii=False)
+                handle.write("\n")
+        except OSError as exc:
+            messagebox.showerror("Cannot save superlattice", str(exc))
+            return
+        self.stack_path_var.set(selected)
+        self.stack_document = copy.deepcopy(document)
+        self.status_var.set(f"Saved superlattice: {selected}")
+
+    def _on_stack_capping_changed(self) -> None:
+        try:
+            document = self._stack_document_from_controls()
+        except (TypeError, ValueError) as exc:
+            self.stack_capping_enabled_var.set(not self.stack_capping_enabled_var.get())
+            messagebox.showerror("Cannot update capping layer", str(exc))
+            return
+        if self.stack_capping_enabled_var.get():
+            if document.get("capping_layer") is None:
+                capping_layer = copy.deepcopy(document["sequence"]["layers"][-1])
+                capping_layer.update(
+                    name="Capping",
+                    unit_cells=1.0,
+                    dinterface=0.0,
+                    scale=1.0,
+                    area_scale=1.0,
+                )
+                document["capping_layer"] = capping_layer
+        else:
+            document.pop("capping_layer", None)
+            document["fit_parameters"] = [
+                parameter
+                for parameter in document.get("fit_parameters", [])
+                if not str(parameter["target"]).startswith("capping.")
+            ]
+        self._populate_stack_rows(document)
+
+    def _add_stack_layer(self) -> None:
+        try:
+            document = self._stack_document_from_controls()
+        except (TypeError, ValueError) as exc:
+            messagebox.showerror("Cannot add layer", str(exc))
+            return
+        layers = document["sequence"]["layers"]
+        existing = {str(layer["name"]) for layer in layers}
+        number = 1
+        while f"Layer {number}" in existing:
+            number += 1
+        layer = copy.deepcopy(layers[-1])
+        layer["name"] = f"Layer {number}"
+        layers.append(layer)
+        self._populate_stack_rows(document)
+
+    def _remove_stack_layer(self) -> None:
+        try:
+            document = self._stack_document_from_controls()
+        except (TypeError, ValueError) as exc:
+            messagebox.showerror("Cannot remove layer", str(exc))
+            return
+        layers = document["sequence"]["layers"]
+        if len(layers) <= 1:
+            messagebox.showinfo(
+                "Superlattice", "A superlattice requires at least one repeated layer."
+            )
+            return
+        removed_name = str(layers.pop()["name"])
+        document["fit_parameters"] = [
+            parameter
+            for parameter in document.get("fit_parameters", [])
+            if not str(parameter["target"]).startswith(f"{removed_name}.")
+        ]
+        self._populate_stack_rows(document)
+
+    def _on_stack_enabled_changed(self, *_args: object) -> None:
+        self._clear_fit_result_values()
+        state = tk.DISABLED if self.stack_enabled_var.get() else tk.NORMAL
+        self.strain_checkbutton.configure(state=state)
+        self.roughness_checkbutton.configure(state=state)
+        self.run_button.configure(
+            state=tk.DISABLED if self.running else tk.NORMAL
+        )
+        self.status_var.set(
+            "Superlattice simulation and fitting enabled"
+            if self.stack_enabled_var.get()
+            else "Ready"
+        )
+        if self.stack_enabled_var.get():
+            if self.superlattice_data_preview:
+                self._draw_experimental_preview()
+            else:
+                self._draw_empty_plot()
+        else:
+            self._schedule_data_preview()
+
     def _sync_model_controls(self) -> None:
         is_dynamic = self.model_var.get() == "Dynamic"
         self._set_widgets_enabled(self.dynamic_widgets, is_dynamic)
         self._set_widgets_enabled(self.kinematic_widgets, not is_dynamic)
+        self._sync_stack_calculation_controls(is_dynamic)
         self._sync_kinematic_substrate_controls()
+
+    def _sync_stack_calculation_controls(self, is_dynamic: bool) -> None:
+        variable_rows = (
+            (
+                (self.dynamic_resolution_start_var, self.dynamic_resolution_min_var, self.dynamic_resolution_max_var),
+                (self.dynamic_intensity_start_var, self.dynamic_intensity_min_var, self.dynamic_intensity_max_var),
+                (self.dynamic_bkg_a_start_var, self.dynamic_bkg_a_min_var, self.dynamic_bkg_a_max_var),
+                (self.dynamic_bkg_b_start_var, self.dynamic_bkg_b_min_var, self.dynamic_bkg_b_max_var),
+            )
+            if is_dynamic
+            else (
+                (self.kin_resolution_start_var, self.kin_resolution_min_var, self.kin_resolution_max_var),
+                (self.kin_scale_start_var, self.kin_scale_min_var, self.kin_scale_max_var),
+                (self.kin_bkg_a_start_var, self.kin_bkg_a_min_var, self.kin_bkg_a_max_var),
+                (self.kin_bkg_b_start_var, self.kin_bkg_b_min_var, self.kin_bkg_b_max_var),
+            )
+        )
+        for value_entry, min_entry, max_entry, indicator, variables in zip(
+            self.stack_calculation_entries,
+            self.stack_calculation_min_entries,
+            self.stack_calculation_max_entries,
+            self.stack_model_calculation_indicators,
+            variable_rows,
+        ):
+            value_var, min_var, max_var = variables
+            value_entry.configure(textvariable=value_var)
+            min_entry.configure(textvariable=min_var)
+            max_entry.configure(textvariable=max_var)
+            indicator.start_var = value_var
+            indicator.min_var = min_var
+            indicator.max_var = max_var
+            self._draw_range_indicator(indicator)
+        self._set_widgets_enabled(self.stack_dynamic_calculation_widgets, is_dynamic)
+
+    def _redraw_stack_model_calculation_indicators(self, *_args: object) -> None:
+        for indicator in self.stack_model_calculation_indicators:
+            self._draw_range_indicator(indicator)
 
     def _sync_kinematic_substrate_controls(self) -> None:
         enabled = self.model_var.get() == "Kinematic" and bool(self.kin_substrate_var.get())
@@ -2149,6 +3088,7 @@ class FitApp:
             self.data_path_var.set(str(setup["data_path"]))
             self.wavelength_var.set(str(setup["wavelength"]))
             self.dynamic_backend_var.set(str(setup["dynamic_backend"]))
+            self.density_method_var.set(str(setup.get("density_method", "sampled")))
             self.density_slices_var.set(str(setup.get("density_slices", 50)))
             self.density_max_q0_var.set(str(setup.get("density_max_q0", 30.0)))
             self.seed_var.set(str(setup["seed"]))
@@ -2301,6 +3241,14 @@ class FitApp:
                 (self.film_rough_fit_enabled_var, self.substrate_rough_fit_enabled_var),
                 setup["roughness_fit_flags"],
             )
+            stack_document = setup.get("stack_document")
+            if isinstance(stack_document, dict):
+                self.stack_path_var.set(str(setup.get("stack_path", self.stack_path_var.get())))
+                self._set_stack_document(stack_document, sync_calculation=False)
+            self.stack_points_per_unit_var.set(str(setup.get("stack_points_per_unit", 50)))
+            stack_enabled = bool(setup.get("stack_enabled", False))
+            self.superlattice_data_preview = stack_enabled
+            self.stack_enabled_var.set(stack_enabled)
         finally:
             self.updating_twotheta_window = False
 
@@ -2430,6 +3378,9 @@ class FitApp:
             min_label, max_label = self._axis_limit_labels()
             self.min_label_var.set(min_label)
             self.max_label_var.set(max_label)
+            self.stack_sampling_label_var.set(
+                "Points per q unit" if self._axis_is_q() else "Points per degree"
+            )
             self.updating_twotheta_window = False
         self._schedule_data_preview()
 
@@ -2523,6 +3474,7 @@ class FitApp:
 
     def _on_data_path_changed(self, *_args: object) -> None:
         self.preview_data_path = None
+        self.superlattice_data_preview = False
         self._clear_fit_result_values()
         self._schedule_data_preview()
 
@@ -2554,6 +3506,9 @@ class FitApp:
     def _draw_experimental_preview(self) -> None:
         self.preview_after_id = None
         if self.running:
+            return
+        if self.stack_enabled_var.get() and not self.superlattice_data_preview:
+            self._draw_empty_plot()
             return
 
         self._draw_empty_plot()
@@ -2651,9 +3606,63 @@ class FitApp:
             self.substrate_rough_fit_var,
         ):
             variable.set("")
+        for variables in self.stack_row_vars:
+            for key in ("dinterface", "scale", "area_scale"):
+                variables[f"{key}_fit"].set("")
+        for variable in self.stack_calculation_fit_vars.values():
+            variable.set("")
 
     def _set_fit_result_values(self, config: dict[str, object], params: np.ndarray) -> None:
         self._clear_fit_result_values()
+        if bool(config.get("stack_enabled", False)):
+            definition = StackDefinition(
+                Path(str(config["stack_path"])),
+                copy.deepcopy(config["stack_document"]),
+            )
+            values = definition.overrides(params)
+            for role, variables in zip(self.stack_row_roles, self.stack_row_vars):
+                prefix = (
+                    role
+                    if role in {"substrate", "capping"}
+                    else variables["name"].get().strip()
+                )
+                for key in ("dinterface", "scale", "area_scale"):
+                    target = f"{prefix}.{key}"
+                    if target in values:
+                        result = self._format_fit_result(values[target])
+                        variables[key].set(result)
+                        variables[f"{key}_fit"].set(result)
+                    else:
+                        variables[f"{key}_fit"].set("off")
+            calculation_values = {
+                key.removeprefix("calculation."): value
+                for key, value in values.items()
+                if key.startswith("calculation.")
+            }
+            calculation_start_vars = (
+                {
+                    "resolution": self.dynamic_resolution_start_var,
+                    "intensity_scale": self.dynamic_intensity_start_var,
+                    "background_a": self.dynamic_bkg_a_start_var,
+                    "background_b": self.dynamic_bkg_b_start_var,
+                }
+                if config["model"] == "Dynamic"
+                else {
+                    "resolution": self.kin_resolution_start_var,
+                    "intensity_scale": self.kin_scale_start_var,
+                    "background_a": self.kin_bkg_a_start_var,
+                    "background_b": self.kin_bkg_b_start_var,
+                }
+            )
+            for key, variable in calculation_start_vars.items():
+                if key in calculation_values:
+                    result = self._format_fit_result(calculation_values[key])
+                    variable.set(result)
+                    self.stack_calculation_fit_vars[key].set(result)
+                else:
+                    self.stack_calculation_fit_vars[key].set("off")
+            self._redraw_range_indicators()
+            return
         if config["model"] == "Kinematic":
             self.kin_d_start_var.set(self._format_fit_result(float(params[0])))
             self.kin_planes_start_var.set(self._format_fit_result(float(params[1])))
@@ -2733,6 +3742,25 @@ class FitApp:
         self._redraw_range_indicators()
 
     def _fit_boundary_warnings(self, config: dict[str, object], params: np.ndarray) -> list[str]:
+        if bool(config.get("stack_enabled", False)):
+            definition = StackDefinition(
+                Path(str(config["stack_path"])),
+                copy.deepcopy(config["stack_document"]),
+            )
+            warnings = []
+            for name, value, (lower, upper) in zip(
+                definition.parameter_names, params, definition.bounds
+            ):
+                ratio = (float(value) - lower) / (upper - lower)
+                if ratio <= 0.02:
+                    warnings.append(f"{name} reached the lower bound region")
+                elif ratio >= 0.98:
+                    warnings.append(f"{name} reached the upper bound region")
+                elif ratio <= 0.05:
+                    warnings.append(f"{name} is close to the lower bound")
+                elif ratio >= 0.95:
+                    warnings.append(f"{name} is close to the upper bound")
+            return warnings
         rows: list[tuple[str, float, float, float]] = []
         if config["model"] == "Kinematic":
             settings = config["kinematic_settings"]
@@ -3169,6 +4197,9 @@ class FitApp:
         dynamic_backend = self.dynamic_backend_var.get().strip().lower()
         if dynamic_backend not in {"auto", "reflection", "fused", "legacy"}:
             raise ValueError("dynamic backend must be auto, reflection, fused, or legacy")
+        density_method = self.density_method_var.get().strip().lower()
+        if density_method not in {"sampled", "analytic"}:
+            raise ValueError("density method must be sampled or analytic")
         density_slices = int(self.density_slices_var.get())
         density_max_q0 = float(self.density_max_q0_var.get())
         sampling_scale = (
@@ -3181,12 +4212,27 @@ class FitApp:
             * sampling_scale
         )
         validate_density_sampling(substrate_period, density_slices, density_max_q0)
+        stack_enabled = bool(self.stack_enabled_var.get())
+        try:
+            stack_points_per_unit = float(self.stack_points_per_unit_var.get())
+        except ValueError:
+            if stack_enabled:
+                raise ValueError(
+                    "Superlattice simulation points per axis unit must be a number"
+                ) from None
+            stack_points_per_unit = 50.0
+        stack_document = (
+            self._stack_document_from_controls(allow_outside_start)
+            if stack_enabled
+            else copy.deepcopy(self.stack_document)
+        )
         return {
             "sample_profile": self.sample_var.get(),
             "data_path": str(data_path),
             "model": self.model_var.get(),
             "wavelength": wavelength,
             "dynamic_backend": dynamic_backend,
+            "density_method": density_method,
             "density_slices": density_slices,
             "density_max_q0": density_max_q0,
             "twotheta_min": twotheta_min,
@@ -3248,11 +4294,18 @@ class FitApp:
                 "film": film_roughness,
                 "substrate": substrate_roughness,
             },
+            "stack_enabled": stack_enabled,
+            "stack_path": self.stack_path_var.get(),
+            "stack_document": stack_document,
+            "stack_points_per_unit": stack_points_per_unit,
+            "stack_axis_min": float(self.min_var.get()),
+            "stack_axis_max": float(self.max_var.get()),
+            "stack_q_axis": self._axis_is_q(),
         }
 
     def _make_model_and_start(
         self, config: dict[str, object]
-    ) -> tuple[SampleConfig, KinematicModel | DynamicModel, np.ndarray, np.ndarray, dict[str, object], dict[str, object]]:
+    ) -> tuple[SampleConfig, KinematicModel | DynamicModel | StackModel, np.ndarray, np.ndarray, dict[str, object], dict[str, object]]:
         sample = SAMPLES[str(config["sample_profile"])]
         kinematic_settings = config["kinematic_settings"]
         film_settings = config["film_settings"]
@@ -3262,6 +4315,18 @@ class FitApp:
             float(config["twotheta_min"]), float(config["twotheta_max"]),
             str(config["data_path"]),
         )
+        if bool(config.get("stack_enabled", False)):
+            definition = StackDefinition(
+                Path(str(config["stack_path"])),
+                copy.deepcopy(config["stack_document"]),
+            )
+            model = StackModel(
+                definition,
+                twotheta,
+                observed,
+                model=str(config["model"]).lower(),
+            )
+            return sample, model, definition.bounds, definition.start, {}, {}
         if config["model"] == "Kinematic":
             model = KinematicModel(
                 twotheta,
@@ -3299,6 +4364,7 @@ class FitApp:
                 substrate_area_scale=float(substrate_settings["area_scale"]),
                 wavelength=float(config["wavelength"]),
                 propagation_backend=str(config["dynamic_backend"]),
+                density_method=str(config["density_method"]),
                 density_slices=int(config["density_slices"]),
                 density_max_q0=float(config["density_max_q0"]),
             )
@@ -3315,6 +4381,10 @@ class FitApp:
         return sample, model, bounds_array, start, film_settings, substrate_settings
 
     def _fit_mask_for_config(self, config: dict[str, object], n_params: int) -> np.ndarray:
+        if bool(config.get("stack_enabled", False)):
+            if n_params == 0:
+                raise ValueError("Select at least one superlattice parameter to fit")
+            return np.ones(n_params, dtype=bool)
         if config["model"] == "Kinematic":
             flags = list(config["kinematic_fit_flags"])
             if bool(config["include_kinematic_substrate"]):
@@ -3336,6 +4406,8 @@ class FitApp:
         return mask
 
     def _has_selected_fit_parameter(self, config: dict[str, object]) -> bool:
+        if bool(config.get("stack_enabled", False)):
+            return bool(config["stack_document"].get("fit_parameters"))
         if config["model"] == "Kinematic":
             flags = list(config["kinematic_fit_flags"])
             if bool(config["include_kinematic_substrate"]):
@@ -3349,6 +4421,100 @@ class FitApp:
             flags.extend(list(config["roughness_fit_flags"]))
         return any(flags)
 
+    def _simulate_stack(self, config: dict[str, object]) -> None:
+        if self.preview_after_id is not None:
+            self.root.after_cancel(self.preview_after_id)
+            self.preview_after_id = None
+        document = copy.deepcopy(config["stack_document"])
+        definition = StackDefinition(Path(str(config["stack_path"])), document)
+        show_observed = self.superlattice_data_preview
+        if show_observed:
+            twotheta_min, twotheta_max = self._window_twotheta_limits()
+            twotheta, observed = load_sample_data(
+                twotheta_min, twotheta_max, str(config["data_path"])
+            )
+            q = np.asarray(q_from_twotheta(twotheta, float(config["wavelength"])))
+        else:
+            twotheta, q = stack_simulation_grid(
+                float(config["stack_axis_min"]),
+                float(config["stack_axis_max"]),
+                float(config["stack_points_per_unit"]),
+                bool(config["stack_q_axis"]),
+                float(config["wavelength"]),
+            )
+            observed = np.zeros_like(twotheta)
+        model = StackModel(definition, twotheta, model=str(config["model"]).lower())
+        predicted = model.predict(definition.start)
+        cost = 0.0
+        if show_observed:
+            positive = observed[observed > 0]
+            if not len(positive):
+                raise ValueError("Positive experimental intensities are required")
+            floor = max(float(np.min(positive)) * 0.1, 1e-12)
+            cost = float(
+                np.mean(
+                    np.abs(
+                        np.log10(np.maximum(predicted, floor))
+                        - np.log10(np.maximum(observed, floor))
+                    )
+                )
+            )
+        dynamic_result = model.last_dynamic_result
+        self.stack_document = document
+        self.history_x.clear()
+        self.history_y.clear()
+        self.history_phase.clear()
+        self._clear_fit_result_values()
+        self.summary_text.delete("1.0", tk.END)
+        self._apply_update(
+            FitUpdate(
+                phase="simulation",
+                cost=cost,
+                twotheta=model.twotheta,
+                q=q,
+                observed=observed,
+                predicted=predicted,
+                params=definition.start,
+                density_z=None if dynamic_result is None else dynamic_result.z,
+                density_rho_e=None if dynamic_result is None else dynamic_result.rho_e,
+                show_observed=show_observed,
+            )
+        )
+        sequence = document["sequence"]
+        layer_text = " / ".join(
+            f"{layer['name']} ({float(layer['unit_cells']):g} cells)"
+            for layer in sequence["layers"]
+        )
+        capping_layer = document.get("capping_layer")
+        capping_text = (
+            ""
+            if capping_layer is None
+            else f"Capping layer: {capping_layer['name']} "
+            f"({float(capping_layer['unit_cells']):g} cells)\n"
+        )
+        summary = (
+            "Superlattice simulation\n"
+            f"Superlattice: {definition.name}\n"
+            f"Model: {config['model']}\n"
+            f"Sequence: [{layer_text}] x {sequence['repetitions']}\n"
+            f"{capping_text}"
+            f"Expanded layers including substrate: {len(definition.layers())}\n"
+            f"X-ray wavelength: {float(config['wavelength']):.6g} A\n"
+            f"Calculated points: {len(twotheta)} "
+            + (
+                "(experimental data grid)"
+                if show_observed
+                else f"({float(config['stack_points_per_unit']):g} per "
+                f"{'q unit' if config['stack_q_axis'] else 'degree'})"
+            )
+        )
+        self.summary_text.insert(tk.END, summary)
+        self.status_var.set(
+            f"Superlattice simulation complete: cost={cost:.5g}"
+            if show_observed
+            else f"Superlattice simulation complete: {len(twotheta)} points"
+        )
+
     def simulate_pattern(self) -> None:
         if self.running:
             messagebox.showinfo("Fit running", "Stop the fit before simulating a new pattern.")
@@ -3356,6 +4522,9 @@ class FitApp:
 
         try:
             config = self._build_run_config()
+            if config["stack_enabled"]:
+                self._simulate_stack(config)
+                return
             sample, model, _bounds_array, start, film_settings, substrate_settings = self._make_model_and_start(config)
             predicted = model.predict(start)
             cost = model.objective(start)
@@ -3395,6 +4564,7 @@ class FitApp:
             )
             backend_text = (
                 f"Dynamic backend: {config['dynamic_backend']}\n"
+                f"Density method: {config['density_method']}\n"
                 f"Density sampling: {config['density_slices']} slices/cell, "
                 f"Q max {float(config['density_max_q0']):.6g} 1/A\n"
                 if config["model"] == "Dynamic"
@@ -3417,6 +4587,12 @@ class FitApp:
     def run_fit(self) -> None:
         if self.running:
             messagebox.showinfo("Fit running", "A fit is already running.")
+            return
+        if self.stack_enabled_var.get() and not self.superlattice_data_preview:
+            messagebox.showerror(
+                "Superlattice data required",
+                "Load experimental data in the superlattice Structure tab before fitting.",
+            )
             return
 
         try:
@@ -3771,31 +4947,63 @@ class FitApp:
                 comments="",
             )
             figure_path = ROOT / "validation" / f"{sample_slug}_gui_{model_slug}_fit_progress.png"
-            summary = summarize_fit(
-                sample,
-                str(config["model"]),
-                best_params,
-                cost,
-                rmse,
-                bool(config["include_strain"]),
-                bool(config["include_roughness"]),
-                bool(config["include_kinematic_substrate"]),
-                film_settings if config["model"] == "Dynamic" else None,
-                substrate_settings if config["model"] == "Dynamic" else None,
-            )
-            backend_text = (
-                f"Dynamic backend: {config['dynamic_backend']}\n"
-                f"Density sampling: {config['density_slices']} slices/cell, "
-                f"Q max {float(config['density_max_q0']):.6g} 1/A\n"
-                if config["model"] == "Dynamic"
-                else ""
-            )
-            summary = (
-                f"Data file: {resolve_data_path(str(config['data_path']))}\n"
-                f"X-ray wavelength: {float(config['wavelength']):.6g} A\n"
-                f"{backend_text}"
-                + summary
-            )
+            if bool(config.get("stack_enabled", False)):
+                definition = StackDefinition(
+                    Path(str(config["stack_path"])),
+                    copy.deepcopy(config["stack_document"]),
+                )
+                resolved_path = ROOT / "validation" / (
+                    f"{sample_slug}_gui_{model_slug}_fit_superlattice.json"
+                )
+                with resolved_path.open("w", encoding="utf-8") as handle:
+                    json.dump(
+                        definition.resolved_document(best_params),
+                        handle,
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                    handle.write("\n")
+                fitted_lines = "\n".join(
+                    f"{name}: {value:.8g}"
+                    for name, value in definition.overrides(best_params).items()
+                )
+                summary = (
+                    "Superlattice fit\n"
+                    f"Superlattice: {definition.name}\n"
+                    f"Model: {config['model']}\n"
+                    f"Data file: {resolve_data_path(str(config['data_path']))}\n"
+                    f"Mean abs log10 error: {cost:.6e}\n"
+                    f"RMSE: {rmse:.6e} cps\n"
+                    f"{fitted_lines}\n"
+                    f"Resolved superlattice: {resolved_path}"
+                )
+            else:
+                summary = summarize_fit(
+                    sample,
+                    str(config["model"]),
+                    best_params,
+                    cost,
+                    rmse,
+                    bool(config["include_strain"]),
+                    bool(config["include_roughness"]),
+                    bool(config["include_kinematic_substrate"]),
+                    film_settings if config["model"] == "Dynamic" else None,
+                    substrate_settings if config["model"] == "Dynamic" else None,
+                )
+                backend_text = (
+                    f"Dynamic backend: {config['dynamic_backend']}\n"
+                    f"Density method: {config['density_method']}\n"
+                    f"Density sampling: {config['density_slices']} slices/cell, "
+                    f"Q max {float(config['density_max_q0']):.6g} 1/A\n"
+                    if config["model"] == "Dynamic"
+                    else ""
+                )
+                summary = (
+                    f"Data file: {resolve_data_path(str(config['data_path']))}\n"
+                    f"X-ray wavelength: {float(config['wavelength']):.6g} A\n"
+                    f"{backend_text}"
+                    + summary
+                )
             summary += f"\nCSV: {output_path}\nPNG: {figure_path}"
             self.queue.put(("done", (summary, figure_path, config, best_params)))
         except FitCancelled as exc:
@@ -3881,16 +5089,20 @@ class FitApp:
         self.last_update = update
         if self.active_fit_config is not None:
             self._set_fit_result_values(self.active_fit_config, update.params)
-        self.history_x.append(len(self.history_x) + 1)
-        self.history_y.append(update.cost)
-        self.history_phase.append(update.phase)
-        if self.paused:
-            self.status_var.set(f"Fit paused at {update.phase}: cost={update.cost:.5g}")
+        if update.show_observed:
+            self.history_x.append(len(self.history_x) + 1)
+            self.history_y.append(update.cost)
+            self.history_phase.append(update.phase)
+            if self.paused:
+                self.status_var.set(f"Fit paused at {update.phase}: cost={update.cost:.5g}")
+            else:
+                self.status_var.set(f"{update.phase}: cost={update.cost:.5g}")
         else:
-            self.status_var.set(f"{update.phase}: cost={update.cost:.5g}")
+            self.status_var.set(update.phase.title())
 
         self.loss_axis.clear()
-        self.loss_axis.plot(self.history_x, self.history_y, color="tab:blue", linewidth=1.5)
+        if self.history_x:
+            self.loss_axis.plot(self.history_x, self.history_y, color="tab:blue", linewidth=1.5)
         for index in range(1, len(self.history_phase)):
             if self.history_phase[index] != self.history_phase[index - 1]:
                 x = self.history_x[index]
@@ -3908,12 +5120,17 @@ class FitApp:
                 )
         self.loss_axis.set_xlabel("progress callback")
         self.loss_axis.set_ylabel("mean abs log10 error")
-        self.loss_axis.set_title(f"{update.phase}: cost={update.cost:.5g}")
+        self.loss_axis.set_title(
+            f"{update.phase}: cost={update.cost:.5g}" if update.show_observed else update.phase.title()
+        )
         self.loss_axis.grid(True, alpha=0.25)
 
         self.fit_axis.clear()
         x_values = self._x_values(update.twotheta, update.q, CU_K_ALPHA_WAVELENGTH)
-        self.fit_axis.plot(x_values, update.observed, ".", color="black", markersize=3, label="data")
+        if update.show_observed:
+            self.fit_axis.plot(
+                x_values, update.observed, ".", color="black", markersize=3, label="data"
+            )
         self.fit_axis.plot(
             x_values,
             update.predicted,

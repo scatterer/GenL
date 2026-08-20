@@ -101,6 +101,34 @@ def benchmark_dynamic_propagation() -> dict[str, float]:
     )
     legacy_seconds = time.perf_counter() - start
 
+    analytic_workspace = DynamicWorkspace()
+    start = time.perf_counter()
+    analytic_result = dynamic.calc_dynamic_density(
+        q,
+        wavelength,
+        stack,
+        Control(pol=2),
+        Instrument(theta_m=2),
+        propagation_backend="reflection",
+        density_method="analytic",
+        workspace=analytic_workspace,
+        **kwargs,
+    )
+    analytic_cold_seconds = time.perf_counter() - start
+    start = time.perf_counter()
+    dynamic.calc_dynamic_density(
+        q,
+        wavelength,
+        stack,
+        Control(pol=2),
+        Instrument(theta_m=2),
+        propagation_backend="reflection",
+        density_method="analytic",
+        workspace=analytic_workspace,
+        **kwargs,
+    )
+    analytic_warm_seconds = time.perf_counter() - start
+
     return {
         "reflection_seconds": reflection_seconds,
         "cached_seconds": cached_seconds,
@@ -112,6 +140,10 @@ def benchmark_dynamic_propagation() -> dict[str, float]:
         "reflection_diff": float(np.max(np.abs(reflection_result.refl - cached_result.refl))),
         "max_abs_diff": float(np.max(np.abs(cached_result.refl - legacy_result.refl))),
         "cached_uncached_diff": float(np.max(np.abs(cached_result.refl - uncached_result.refl))),
+        "analytic_cold_seconds": analytic_cold_seconds,
+        "analytic_warm_seconds": analytic_warm_seconds,
+        "analytic_kernel_count": float(len(analytic_workspace.atomic_kernels)),
+        "analytic_vacuum": float(analytic_result.diagnostics["vacuum_thickness_used"]),
     }
 
 
@@ -128,6 +160,10 @@ def main() -> int:
     print(f"reflection/fused diff: {metrics['reflection_diff']:.6e}")
     print(f"max abs reflectivity diff: {metrics['max_abs_diff']:.6e}")
     print(f"cached/uncached diff: {metrics['cached_uncached_diff']:.6e}")
+    print(f"analytic density cold seconds: {metrics['analytic_cold_seconds']:.6f}")
+    print(f"analytic density warm seconds: {metrics['analytic_warm_seconds']:.6f}")
+    print(f"analytic cached kernels: {int(metrics['analytic_kernel_count'])}")
+    print(f"analytic vacuum used: {metrics['analytic_vacuum']:.6f} A")
     return 0
 
 
