@@ -48,7 +48,7 @@ On Windows, use:
 
 ## First simulation or fit
 
-1. Use **Browse** beside **Experimental data file** to load a two-column text,
+1. For films, use **Browse** beside **Film data** to load a two-column text,
    DAT, or CSV file. The columns must contain 2theta in degrees and intensity.
 2. Choose **Kinematic** or **Dynamic** in the scattering-model selector.
 3. Enter the film, substrate, wavelength, and calculation parameters.
@@ -102,6 +102,10 @@ The film-parameter notebook is divided into four groups:
   parameters.
 - **Optimization settings**: random seed, progress update interval,
   differential-evolution limits, local evaluations, and polish iterations.
+
+GenL initializes the optimizer seed from the operating system's random source.
+Use **New seed** to generate an independent differential-evolution population;
+the displayed seed is retained in saved setups for reproducible reruns.
 
 Use **Sample configuration** in the setup panel to switch between the mutually
 exclusive film and superlattice workspaces. The superlattice workspace has

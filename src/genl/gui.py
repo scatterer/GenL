@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import queue
+import secrets
 import threading
 import tkinter as tk
 import webbrowser
@@ -1090,7 +1091,7 @@ class FitApp:
         self.max_label_var = tk.StringVar(value="2\u03b8 max (deg)")
         self.min_var = tk.StringVar(value="")
         self.max_var = tk.StringVar(value="")
-        self.seed_var = tk.StringVar(value="20260601")
+        self.seed_var = tk.StringVar(value=str(secrets.randbits(32)))
         self.maxiter_var = tk.StringVar(value="18")
         self.popsize_var = tk.StringVar(value="6")
         self.local_var = tk.StringVar(value="180")
@@ -1402,30 +1403,22 @@ class FitApp:
             value=True,
         ).pack(side=tk.LEFT, padx=(8, 0))
 
-        ttk.Label(run_frame, text="Experimental data file").grid(row=1, column=0, sticky="w")
-        ttk.Entry(run_frame, textvariable=self.data_path_var, width=42).grid(
-            row=1, column=1, columnspan=2, sticky="ew", padx=(4, 8), pady=2
-        )
-        ttk.Button(run_frame, text="Browse...", command=self._browse_data_file).grid(
-            row=1, column=3, sticky="ew", pady=2
-        )
-
-        ttk.Label(run_frame, text="X-ray wavelength (\u00c5)").grid(row=2, column=0, sticky="w")
+        ttk.Label(run_frame, text="X-ray wavelength (\u00c5)").grid(row=1, column=0, sticky="w")
         ttk.Entry(run_frame, textvariable=self.wavelength_var, width=10).grid(
-            row=2, column=1, sticky="ew", padx=(4, 8), pady=2
+            row=1, column=1, sticky="ew", padx=(4, 8), pady=2
         )
-        ttk.Label(run_frame, text="Horizontal axis").grid(row=2, column=2, sticky="w")
+        ttk.Label(run_frame, text="Horizontal axis").grid(row=1, column=2, sticky="w")
         ttk.Combobox(
             run_frame,
             textvariable=self.axis_var,
             values=("2\u03b8", "q"),
             state="readonly",
             width=10,
-        ).grid(row=2, column=3, sticky="ew", padx=(4, 8), pady=2)
+        ).grid(row=1, column=3, sticky="ew", padx=(4, 8), pady=2)
 
         run_controls = [
-            (self.min_label_var, self.min_var, 3, 0),
-            (self.max_label_var, self.max_var, 3, 2),
+            (self.min_label_var, self.min_var, 2, 0),
+            (self.max_label_var, self.max_var, 2, 2),
         ]
         for label, var, row, column in run_controls:
             if isinstance(label, tk.StringVar):
@@ -1436,33 +1429,20 @@ class FitApp:
                 row=row, column=column + 1, sticky="ew", padx=(4, 8), pady=2
             )
 
-        self.strain_checkbutton = ttk.Checkbutton(
-            run_frame, text="Include strain", variable=self.strain_var
-        )
-        self.strain_checkbutton.grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(4, 2)
-        )
-        self.roughness_checkbutton = ttk.Checkbutton(
-            run_frame, text="Include roughness", variable=self.roughness_var
-        )
-        self.roughness_checkbutton.grid(
-            row=4, column=2, columnspan=2, sticky="w", pady=(4, 2)
-        )
-
         self.simulate_button = ttk.Button(
             run_frame,
             text="Simulate",
             command=self.simulate_pattern,
             style="Simulate.TButton",
         )
-        self.simulate_button.grid(row=5, column=0, sticky="ew", padx=(0, 4), pady=(6, 2))
+        self.simulate_button.grid(row=3, column=0, sticky="ew", padx=(0, 4), pady=(6, 2))
         self.run_button = ttk.Button(
             run_frame,
             text="Run fit",
             command=self.run_fit,
             style="Run.TButton",
         )
-        self.run_button.grid(row=5, column=1, sticky="ew", padx=(0, 4), pady=(6, 2))
+        self.run_button.grid(row=3, column=1, sticky="ew", padx=(0, 4), pady=(6, 2))
         self.pause_button = ttk.Button(
             run_frame,
             text="Pause fit",
@@ -1470,7 +1450,7 @@ class FitApp:
             state=tk.DISABLED,
             style="Pause.TButton",
         )
-        self.pause_button.grid(row=5, column=2, sticky="ew", padx=(0, 4), pady=(6, 2))
+        self.pause_button.grid(row=3, column=2, sticky="ew", padx=(0, 4), pady=(6, 2))
         self.stop_button = ttk.Button(
             run_frame,
             text="Stop fit",
@@ -1478,19 +1458,19 @@ class FitApp:
             state=tk.DISABLED,
             style="Stop.TButton",
         )
-        self.stop_button.grid(row=5, column=3, sticky="ew", padx=(4, 0), pady=(6, 2))
+        self.stop_button.grid(row=3, column=3, sticky="ew", padx=(4, 0), pady=(6, 2))
 
         ttk.Button(run_frame, text="Save setup/results...", command=self._save_project).grid(
-            row=6, column=0, columnspan=2, sticky="ew", padx=(0, 4), pady=2
+            row=4, column=0, columnspan=2, sticky="ew", padx=(0, 4), pady=2
         )
         ttk.Button(run_frame, text="Load setup/results...", command=self._load_project).grid(
-            row=6, column=2, columnspan=2, sticky="ew", padx=(4, 0), pady=2
+            row=4, column=2, columnspan=2, sticky="ew", padx=(4, 0), pady=2
         )
         ttk.Button(run_frame, text="Save plots...", command=self._save_plot_image).grid(
-            row=7, column=0, columnspan=2, sticky="ew", padx=(0, 4), pady=2
+            row=5, column=0, columnspan=2, sticky="ew", padx=(0, 4), pady=2
         )
         ttk.Button(run_frame, text="Export graph data...", command=self._export_graph_data).grid(
-            row=7, column=2, columnspan=2, sticky="ew", padx=(4, 0), pady=2
+            row=5, column=2, columnspan=2, sticky="ew", padx=(4, 0), pady=2
         )
 
         self.status_label = ttk.Label(
@@ -1499,7 +1479,7 @@ class FitApp:
             wraplength=390,
             style="Status.TLabel",
         )
-        self.status_label.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(4, 2))
+        self.status_label.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(4, 2))
         for column in (1, 3):
             run_frame.columnconfigure(column, weight=1)
 
@@ -1512,6 +1492,30 @@ class FitApp:
             self.workspace_frame, text="Film simulation and fitting"
         )
         self.film_container.grid(row=0, column=0, sticky="nsew")
+        film_setup_frame = ttk.Frame(
+            self.film_container, padding=(8, 6), style="Panel.TFrame"
+        )
+        film_setup_frame.pack(fill=tk.X, padx=4, pady=(4, 0))
+        ttk.Label(film_setup_frame, text="Film data").grid(row=0, column=0, sticky="w")
+        ttk.Entry(film_setup_frame, textvariable=self.data_path_var, width=42).grid(
+            row=0, column=1, columnspan=2, sticky="ew", padx=(4, 8), pady=2
+        )
+        ttk.Button(film_setup_frame, text="Browse...", command=self._browse_data_file).grid(
+            row=0, column=3, sticky="ew", pady=2
+        )
+        self.strain_checkbutton = ttk.Checkbutton(
+            film_setup_frame, text="Include strain", variable=self.strain_var
+        )
+        self.strain_checkbutton.grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(4, 0)
+        )
+        self.roughness_checkbutton = ttk.Checkbutton(
+            film_setup_frame, text="Include roughness", variable=self.roughness_var
+        )
+        self.roughness_checkbutton.grid(
+            row=1, column=2, columnspan=2, sticky="w", pady=(4, 0)
+        )
+        film_setup_frame.columnconfigure(1, weight=1)
         parameter_tabs = self.film_parameter_tabs = ttk.Notebook(self.film_container)
         parameter_tabs.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 4))
 
@@ -1941,11 +1945,43 @@ class FitApp:
             ("Local max evaluations", self.local_var, 2, 0),
             ("Polish iterations", self.polish_var, 2, 2),
         ]
+
+        def add_optimization_control(
+            parent: ttk.Frame,
+            label: str,
+            variable: tk.StringVar,
+            row: int,
+            column: int,
+        ) -> None:
+            ttk.Label(parent, text=label).grid(row=row, column=column, sticky="w")
+            if variable is self.seed_var:
+                editor = ttk.Frame(parent, style="Panel.TFrame")
+                editor.grid(
+                    row=row,
+                    column=column + 1,
+                    sticky="ew",
+                    padx=(4, 8),
+                    pady=2,
+                )
+                ttk.Entry(editor, textvariable=variable, width=10).pack(
+                    side=tk.LEFT, fill=tk.X, expand=True
+                )
+                ttk.Button(
+                    editor,
+                    text="New seed",
+                    command=self._generate_optimizer_seed,
+                ).pack(side=tk.LEFT, padx=(4, 0))
+            else:
+                ttk.Entry(parent, textvariable=variable, width=10).grid(
+                    row=row,
+                    column=column + 1,
+                    sticky="ew",
+                    padx=(4, 8),
+                    pady=2,
+                )
+
         for label, var, row, column in optimization_controls:
-            ttk.Label(optimization_frame, text=label).grid(row=row, column=column, sticky="w")
-            ttk.Entry(optimization_frame, textvariable=var, width=10).grid(
-                row=row, column=column + 1, sticky="ew", padx=(4, 8), pady=2
-            )
+            add_optimization_control(optimization_frame, label, var, row, column)
         optimization_frame.columnconfigure(1, weight=1)
         optimization_frame.columnconfigure(3, weight=1)
 
@@ -2186,15 +2222,8 @@ class FitApp:
         stack_tabs.add(stack_optimization_frame, text="Optimization settings")
         self._add_accent_strip(stack_optimization_frame, UI_COLORS["fit"])
         for label, variable, row, column in optimization_controls:
-            ttk.Label(stack_optimization_frame, text=label).grid(
-                row=row, column=column, sticky="w"
-            )
-            ttk.Entry(stack_optimization_frame, textvariable=variable, width=10).grid(
-                row=row,
-                column=column + 1,
-                sticky="ew",
-                padx=(4, 8),
-                pady=2,
+            add_optimization_control(
+                stack_optimization_frame, label, variable, row, column
             )
         stack_optimization_frame.columnconfigure(1, weight=1)
         stack_optimization_frame.columnconfigure(3, weight=1)
@@ -2381,6 +2410,11 @@ class FitApp:
                     widget.configure(state=tk.NORMAL if enabled else tk.DISABLED)
             except tk.TclError:
                 pass
+
+    def _generate_optimizer_seed(self) -> None:
+        seed = secrets.randbits(32)
+        self.seed_var.set(str(seed))
+        self.status_var.set(f"Generated optimizer seed: {seed}")
 
     def _populate_stack_rows(self, document: dict[str, object]) -> None:
         for indicator in self.stack_structure_indicators:
@@ -4500,6 +4534,12 @@ class FitApp:
             if stack_enabled
             else copy.deepcopy(self.stack_document)
         )
+        try:
+            seed = int(self.seed_var.get())
+        except ValueError:
+            raise ValueError("optimizer seed must be an integer") from None
+        if not 0 <= seed < 2**32:
+            raise ValueError("optimizer seed must be between 0 and 4294967295")
         return {
             "sample_profile": self.sample_var.get(),
             "data_path": str(data_path),
@@ -4509,7 +4549,7 @@ class FitApp:
             "density_max_q0": density_max_q0,
             "twotheta_min": twotheta_min,
             "twotheta_max": twotheta_max,
-            "seed": int(self.seed_var.get()),
+            "seed": seed,
             "maxiter": int(self.maxiter_var.get()),
             "popsize": int(self.popsize_var.get()),
             "local_nfev": int(self.local_var.get()),
