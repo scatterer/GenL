@@ -6,6 +6,7 @@ from typing import Mapping
 
 import numpy as np
 
+from .background import centered_polynomial_background
 from .convolution import gauss_conv
 from .dynamic import DynamicResult, DynamicWorkspace, calc_dynamic_density
 from .kinematic import Control, Instrument, Layer, calc_kinematic
@@ -41,14 +42,12 @@ _CALCULATION_DEFAULTS = {
     "intensity_scale": 1.0,
     "background_a": 0.0,
     "background_b": 0.0,
+    "background_c": 0.0,
     "theta_m": 2.0,
     "polarization": 2,
     "vacuum_thickness": 5.0,
     "density_slices": 100,
     "density_max_q0": 30.0,
-    "density_step_q0": 0.1,
-    "dynamic_backend": "auto",
-    "density_method": "sampled",
 }
 
 
@@ -323,10 +322,8 @@ class StackModel:
                 vacuum_thick=float(calculation["vacuum_thickness"]),
                 slices=int(calculation["density_slices"]),
                 max_q0=float(calculation["density_max_q0"]),
-                step_q0=float(calculation["density_step_q0"]),
-                propagation_backend=str(calculation["dynamic_backend"]),
+                propagation_backend="reflection",
                 workspace=self.workspace,
-                density_method=str(calculation["density_method"]),
             )
             scattering = self.last_dynamic_result.refl
         else:
@@ -343,8 +340,12 @@ class StackModel:
         broadened = gauss_conv(self.q, scattering, float(calculation["resolution"]))
         return (
             float(calculation["intensity_scale"]) * broadened
-            + float(calculation["background_a"]) * self.q
-            + float(calculation["background_b"])
+            + centered_polynomial_background(
+                self.q,
+                float(calculation["background_a"]),
+                float(calculation["background_b"]),
+                float(calculation["background_c"]),
+            )
         )
 
     def residual_vector(self, parameters: np.ndarray) -> np.ndarray:

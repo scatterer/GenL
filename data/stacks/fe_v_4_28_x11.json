@@ -12,9 +12,13 @@
     "filename": "MgO_001_fractional.vasp",
     "direction": 1,
     "unit_cells": 1000000.0,
-    "dinterface": 0.279226,
+    "dinterface": 0.326643,
     "scale": 1.0,
-    "area_scale": 1.0
+    "area_scale": 1.0,
+    "bottom_strain_amplitude": 0.0,
+    "bottom_strain_end": 0.0,
+    "top_strain_amplitude": 0.0,
+    "top_strain_end": 0.0
   },
   "sequence": {
     "repetitions": 11,
@@ -23,19 +27,27 @@
         "name": "V",
         "filename": "V_fractional.vasp",
         "direction": 1,
-        "unit_cells": 13.0,
-        "dinterface": 1.033,
-        "scale": 1.02552,
-        "area_scale": 1.0
+        "unit_cells": 14.0,
+        "dinterface": 0.274246,
+        "scale": 1.02239,
+        "area_scale": 1.0,
+        "bottom_strain_amplitude": -0.125113,
+        "bottom_strain_end": 0.589598,
+        "top_strain_amplitude": 0.0,
+        "top_strain_end": 0.0
       },
       {
         "name": "Fe",
         "filename": "Fe_fractional.vasp",
         "direction": 1,
         "unit_cells": 2.0,
-        "dinterface": 1.64691,
-        "scale": 0.97458,
-        "area_scale": 1.0
+        "dinterface": 0.868629,
+        "scale": 1.00872,
+        "area_scale": 1.0,
+        "bottom_strain_amplitude": 0.0942493,
+        "bottom_strain_end": 0.650034,
+        "top_strain_amplitude": 0.0,
+        "top_strain_end": 0.0
       }
     ]
   },
@@ -44,17 +56,15 @@
     "twotheta_max": 75.0,
     "twotheta_step": 0.02,
     "resolution": 0.0015,
-    "intensity_scale": 8277340.0,
-    "background_a": 0.178666,
-    "background_b": -0.0892998,
+    "intensity_scale": 142964000.0,
+    "background_a": 53.8758,
+    "background_b": 1.63145,
+    "background_c": 0.524177,
     "theta_m": 2.0,
     "polarization": 2,
     "vacuum_thickness": 5.0,
     "density_slices": 50,
-    "density_max_q0": 30.0,
-    "density_step_q0": 0.1,
-    "dynamic_backend": "auto",
-    "density_method": "sampled"
+    "density_max_q0": 30.0
   },
   "fit_parameters": [
     {
@@ -73,6 +83,16 @@
       "max": 1.1
     },
     {
+      "target": "V.bottom_strain_amplitude",
+      "min": -0.4,
+      "max": 0.4
+    },
+    {
+      "target": "V.bottom_strain_end",
+      "min": 0.0,
+      "max": 2.0
+    },
+    {
       "target": "Fe.dinterface",
       "min": 0.0,
       "max": 2.0
@@ -81,6 +101,16 @@
       "target": "Fe.scale",
       "min": 0.8,
       "max": 1.1
+    },
+    {
+      "target": "Fe.bottom_strain_amplitude",
+      "min": -0.4,
+      "max": 0.4
+    },
+    {
+      "target": "Fe.bottom_strain_end",
+      "min": 0.0,
+      "max": 2.0
     },
     {
       "target": "capping.dinterface",
@@ -95,17 +125,22 @@
     {
       "target": "calculation.intensity_scale",
       "min": 50.0,
-      "max": 10000000.0
+      "max": 1000000000.0
     },
     {
       "target": "calculation.background_a",
       "min": -10.0,
-      "max": 10.0
+      "max": 100.0
     },
     {
       "target": "calculation.background_b",
-      "min": -0.1,
-      "max": 0.1
+      "min": 0.0,
+      "max": 2.0
+    },
+    {
+      "target": "calculation.background_c",
+      "min": -1.0,
+      "max": 10.0
     }
   ],
   "calculation_ranges": {
@@ -115,15 +150,19 @@
     ],
     "intensity_scale": [
       50.0,
-      10000000.0
+      1000000000.0
     ],
     "background_a": [
       -10.0,
-      10.0
+      100.0
     ],
     "background_b": [
-      -0.1,
-      0.1
+      0.0,
+      2.0
+    ],
+    "background_c": [
+      -1.0,
+      10.0
     ]
   },
   "capping_layer": {
@@ -131,8 +170,12 @@
     "filename": "V_fractional.vasp",
     "direction": 1,
     "unit_cells": 14.0,
-    "dinterface": 0.997391,
-    "scale": 1.02715,
-    "area_scale": 1.0
+    "dinterface": 0.202072,
+    "scale": 1.0351,
+    "area_scale": 1.0,
+    "bottom_strain_amplitude": 0.0,
+    "bottom_strain_end": 0.0,
+    "top_strain_amplitude": 0.0,
+    "top_strain_end": 0.0
   }
 }

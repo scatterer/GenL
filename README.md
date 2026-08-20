@@ -1,7 +1,8 @@
 # GenL
 
 GenL simulates and fits X-ray reflectivity and Laue-oscillation patterns from
-single-crystal films using kinematic or dynamic scattering models.
+single-crystal films and superlattices using kinematic or dynamic scattering
+models.
 
 ## Quick start
 
@@ -72,22 +73,14 @@ The Python implementation is in `src/genl/`. It provides:
 - density-based dynamic scattering for substrates, multilayers, and superlattices
 - versioned superlattice files for repeated crystalline layers
 - strain, film roughness, and substrate/interface roughness controls
-- Gaussian instrumental broadening, scale, and background fitting
+- Gaussian instrumental broadening, scale, and centered quadratic background fitting
 - Numba-accelerated reflection recursion and transfer-matrix propagation
 - a Tk GUI for simulation, fitting, progress monitoring, and result export
 
-For normal use, leave **Dynamic backend** set to `auto`. GenL then chooses the
-fastest available implementation. The other choices are useful for checking
-or troubleshooting calculations:
-
-- `reflection`: Numba reflection-recursion propagation
-- `fused`: Numba transfer-matrix propagation
-- `legacy`: NumPy/vectorized fallback
-
-**Density method** selects `sampled` for the previous Python implementation or
-`analytic` for the MATLAB-v2 smooth, tail-aware density calculation. The sampled
-method remains the default rollback path. For converged analytic Fe calculations,
-start with 200 density slices per cell.
+Dynamic calculations use the MATLAB-v2 smooth, tail-aware analytic density
+method and Numba reflection-recursion propagation. For converged Fe
+calculations, start with 200 density slices per cell. The previous sampled
+density implementation is retained only in the dated archive.
 
 The dynamic fitter caches material, density, and substrate calculations during
 optimization. Code using the Python API can obtain the same reuse by passing a
@@ -104,23 +97,31 @@ The film-parameter notebook is divided into four groups:
   scale, background, Debye-Waller coefficient, and an optional substrate peak.
 - **Dynamic**: film and substrate structure files, crystal directions, layer
   counts, lattice and area scales, interface spacing, density sampling,
-  resolution, intensity scale, background, and propagation backend.
+  resolution, intensity scale, and background.
 - **Strain / roughness**: model-specific strain and film or substrate roughness
   parameters.
-- **Optimization / simulation**: random seed, progress update interval,
+- **Optimization settings**: random seed, progress update interval,
   differential-evolution limits, local evaluations, and polish iterations.
 
-The separate **Superlattice simulation and fitting** panel below the film notebook has
-**Structure** and **Calculation** tabs. It provides a reusable superlattice file,
+Use **Sample configuration** in the setup panel to switch between the mutually
+exclusive film and superlattice workspaces. The superlattice workspace has
+**Structure**, **Strain**, and **Calculation** tabs. It provides a reusable superlattice file,
 substrate and repeated-layer rows, repetitions, unit-cell counts, interface
 spacing, lattice scales, and axis-aware sampling. An optional capping layer is
 appended after the repeated sequence and has the same editable structure and fit
-controls. The layer parameter list has its own vertical scrollbar. Its calculation values share
-the same resolution, intensity-scale, background, backend, and density controls
+controls. Bottom and top strain amplitudes and extents can be simulated or fitted
+for each repeated layer and the capping layer; repeated-layer values are shared by
+every occurrence in the sequence. The layer and strain parameter lists have their
+own vertical scrollbars. Its calculation values share
+the same resolution, intensity-scale, background, and density controls
 as the main model tabs. Interface spacing, lattice scale, area scale, resolution,
-intensity scale, and both background parameters have fit selectors, editable
+intensity scale, and all three background coefficients have fit selectors, editable
 bounds, and boundary gauges. Sampling density, density slices, and density Q
 maximum remain value-only controls.
+
+Film and superlattice backgrounds use a q coordinate centered and normalized to
+the selected scan range. Background curvature is fixed at zero by default and is
+included in fitting only when its **Fit** checkbox is selected.
 
 Use **Load data...** in the superlattice **Structure** tab to select a two-column
 `2theta/intensity` file or a three-column `2theta/q/intensity` file such as
@@ -233,7 +234,7 @@ the shared unit-cell boundary samples and prevents nonphysical low-angle
 reflectivity above one. A faster coarse run is available with:
 
 ```bash
-.venv/bin/python validation/run_gaas_substrate.py --theta-step 0.5 --slices 100 --max-q0 30 --step-q0 0.05
+.venv/bin/python validation/run_gaas_substrate.py --theta-step 0.5 --slices 100 --max-q0 30
 ```
 
 Benchmark the dynamic propagation backends:

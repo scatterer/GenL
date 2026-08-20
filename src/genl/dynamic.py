@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from .debye import debye_waller_prefactor
-from .form_factors import ELEMENT_SYMBOLS, form_factors, read_form_factor_coefficients
+from .form_factors import ELEMENT_SYMBOLS, read_form_factor_coefficients
 from .kinematic import Control, Instrument, Layer, generate_strain, matlab_round
 from .poscar import PoscarStructure, read_poscar
 
@@ -40,7 +40,6 @@ class _AtomicDensityKernel:
 @dataclass(frozen=True)
 class _PreparedMaterial:
     structure: PoscarStructure
-    ff: np.ndarray | None = None
     kernels: tuple[_AtomicDensityKernel, ...] = ()
 
 
@@ -97,10 +96,8 @@ def calc_dynamic_density(
     vacuum_thick: float = 5.0,
     slices: int = 50,
     max_q0: float = 30.0,
-    step_q0: float = 0.1,
     propagation_backend: str | None = None,
     workspace: DynamicWorkspace | None = None,
-    density_method: str = "sampled",
     density_tail_tol: float = 1e-10,
     density_internal_dq: float = 0.01,
     density_auto_vacuum: bool = True,
@@ -108,9 +105,8 @@ def calc_dynamic_density(
     """Density-based dynamic scattering calculation ported from GenL MATLAB.
 
     Supports substrate-only, single-film, and multilayer stacks without direct
-    roughness averaging. ``density_method="analytic"`` uses the smooth,
-    tail-aware density construction from the MATLAB v2 routines; ``sampled``
-    retains the previous Python implementation.
+    roughness averaging. Electron density uses the smooth, tail-aware analytic
+    construction from the MATLAB v2 routines.
     """
 
     if len(stack) < 1:
@@ -121,8 +117,6 @@ def calc_dynamic_density(
         raise ValueError("density slices must be at least 2")
     if max_q0 <= 0:
         raise ValueError("density Q max must be positive")
-    if step_q0 <= 0:
-        raise ValueError("density Q step must be positive")
     if not 0.0 < density_tail_tol < 1.0:
         raise ValueError("density_tail_tol must lie between 0 and 1")
     if density_internal_dq <= 0:
@@ -131,45 +125,29 @@ def calc_dynamic_density(
     q = np.asarray(q, dtype=float)
     control = control or Control(pol=2, model="density")
     instrument = instrument or Instrument(theta_m=2.0)
-    backend = (propagation_backend or os.environ.get("GENL_DYNAMIC_BACKEND", "auto")).lower()
+    backend = (
+        propagation_backend or os.environ.get("GENL_DYNAMIC_BACKEND", "reflection")
+    ).lower()
     if backend not in {"auto", "reflection", "fused", "legacy"}:
         raise ValueError(
             "propagation_backend must be 'auto', 'reflection', 'fused', or 'legacy'"
         )
-    density_method = density_method.lower()
-    if density_method not in {"sampled", "analytic"}:
-        raise ValueError("density_method must be 'sampled' or 'analytic'")
-    add_atom_density = (
-        _add_atom_density_numba
-        if density_method == "sampled"
-        and backend != "legacy"
-        and _add_atom_density_numba is not None
-        else _add_atom_density_numpy
-    )
-
     q_data_max = float(np.max(np.abs(q))) if q.size else 0.0
     q_physical_max = 4.0 * np.pi / wavelength
     density_qpass = max(q_data_max, q_physical_max)
-    if density_method == "analytic" and density_qpass >= max_q0:
+    if density_qpass >= max_q0:
         raise ValueError(
             "density Q max must exceed both the calculated Q range and 4*pi/wavelength "
             f"({density_qpass:.6g} 1/A required)"
         )
 
-    q0 = (
-        np.arange(-max_q0, max_q0 + step_q0 * 0.5, step_q0)
-        if density_method == "sampled"
-        else np.empty(0, dtype=float)
-    )
     prepared = [
         _prepare_layer(
             layer,
             wavelength,
-            q0,
             poscar_dir,
             form_factor_dir,
             workspace,
-            density_method=density_method,
             density_qpass=density_qpass,
             density_qstop=max_q0,
             density_tail_tol=density_tail_tol,
@@ -209,7 +187,7 @@ def calc_dynamic_density(
     )
     effective_vacuum = (
         max(vacuum_thick, max_support + 2.0 * dz)
-        if density_method == "analytic" and density_auto_vacuum
+        if density_auto_vacuum
         else vacuum_thick
     )
     substrate_key = _substrate_cache_key(
@@ -221,9 +199,6 @@ def calc_dynamic_density(
         effective_vacuum,
         slices,
         max_q0,
-        step_q0,
-        backend,
-        density_method,
         density_tail_tol,
         density_internal_dq,
     )
@@ -234,18 +209,9 @@ def calc_dynamic_density(
     ):
         substrate_state = workspace.substrate_state
     else:
-        if density_method == "analytic":
-            substrate_state = _build_analytic_substrate_state(
-                substrate, effective_vacuum, slices
-            )
-        else:
-            substrate_state = _build_substrate_state(
-                substrate,
-                q0,
-                effective_vacuum,
-                slices,
-                add_atom_density,
-            )
+        substrate_state = _build_substrate_state(
+            substrate, effective_vacuum, slices
+        )
         if workspace is not None:
             workspace.substrate_key = substrate_key
             workspace.substrate_state = substrate_state
@@ -266,25 +232,14 @@ def calc_dynamic_density(
         sorted_idx = sorted_indices[idx]
         for atom_counter, pos_z in enumerate(positions):
             form_factor_idx = sorted_idx[atom_counter % len(sorted_idx)]
-            if density_method == "analytic":
-                _add_atom_density_analytic(
-                    rho_e,
-                    z,
-                    pos_z,
-                    float(layer_data["area"]),
-                    layer_data["kernels"][form_factor_idx],
-                    dz,
-                )
-            else:
-                add_atom_density(
-                    rho_e,
-                    z,
-                    pos_z,
-                    layer_data["lat_par"],
-                    layer_data["area"],
-                    q0,
-                    layer_data["ff"][:, form_factor_idx],
-                )
+            _add_atom_density_analytic(
+                rho_e,
+                z,
+                pos_z,
+                float(layer_data["area"]),
+                layer_data["kernels"][form_factor_idx],
+                dz,
+            )
 
     rho_rest = rho_e[substrate_end:]
     rho_0r = substrate_state.rho_0r
@@ -321,7 +276,7 @@ def calc_dynamic_density(
         amplitude_s=amplitude_s,
         amplitude_p=amplitude_p,
         diagnostics={
-            "density_method": density_method,
+            "density_method": "analytic",
             "density_qpass": density_qpass,
             "density_qstop": max_q0,
             "density_tail_tol": density_tail_tol,
@@ -344,7 +299,7 @@ def propagate_vectorized(
     rho_restr: np.ndarray,
     dz: float,
     pol: int,
-    backend: str = "auto",
+    backend: str = "reflection",
 ) -> np.ndarray:
     amplitude = propagate_amplitude_vectorized(
         q, wavelength, rho_0r, rho_1r, substrate_repeats, rho_restr, dz, pol, backend
@@ -358,7 +313,7 @@ def propagate_amplitudes_vectorized(
     substrate_repeats: int,
     rho_restr: np.ndarray,
     substrate_state: _SubstrateState,
-    backend: str = "auto",
+    backend: str = "reflection",
     workspace: DynamicWorkspace | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     if backend in {"auto", "reflection"} and _prepare_substrate_reflection_pair_numba is not None:
@@ -440,7 +395,7 @@ def propagate_amplitude_vectorized(
     rho_restr: np.ndarray,
     dz: float,
     pol: int,
-    backend: str = "auto",
+    backend: str = "reflection",
 ) -> np.ndarray:
     if backend in {"auto", "reflection"} and _prepare_substrate_reflection_pair_numba is not None:
         substrate_reflection = _prepare_substrate_reflection_pair_numba(
@@ -486,56 +441,6 @@ def propagate_amplitude_vectorized(
 
 
 if njit is not None:
-
-    @njit(cache=True)
-    def _add_atom_density_numba(
-        rho_e: np.ndarray,
-        z: np.ndarray,
-        pos_z: float,
-        lat_par: float,
-        area: float,
-        q0: np.ndarray,
-        f_q0: np.ndarray,
-    ) -> None:
-        if len(z) < 2 or len(q0) < 2:
-            return
-        dz = z[1] - z[0]
-        lower = pos_z - lat_par
-        upper = pos_z + lat_par
-        start = max(0, int(np.ceil((lower - z[0]) / dz)))
-        stop = min(len(z) - 1, int(np.floor((upper - z[0]) / dz)))
-
-        while start > 0 and z[start - 1] >= lower:
-            start -= 1
-        while start < len(z) and z[start] < lower:
-            start += 1
-        while stop + 1 < len(z) and z[stop + 1] <= upper:
-            stop += 1
-        while stop >= 0 and z[stop] > upper:
-            stop -= 1
-        if stop < start:
-            return
-
-        delta = z[start] - pos_z
-        for q_idx in range(len(q0)):
-            if q_idx == 0:
-                weight = 0.5 * (q0[1] - q0[0])
-            elif q_idx == len(q0) - 1:
-                weight = 0.5 * (q0[-1] - q0[-2])
-            else:
-                weight = 0.5 * (q0[q_idx + 1] - q0[q_idx - 1])
-
-            value = (
-                weight
-                * f_q0[q_idx]
-                * np.exp(1j * q0[q_idx] * delta)
-                / area
-            )
-            phase_step = np.exp(1j * q0[q_idx] * dz)
-            for z_idx in range(start, stop + 1):
-                rho_e[z_idx] += value
-                value *= phase_step
-
     @njit(parallel=True, cache=True)
     def _combine_transfer_matrices_numba(
         unit_cell_matrix: np.ndarray,
@@ -1227,7 +1132,6 @@ if njit is not None:
         return amplitude
 
 else:
-    _add_atom_density_numba = None
     _combine_transfer_matrices_numba = None
     _prepare_substrate_reflection_pair_numba = None
     _propagate_film_reflection_pair_numba = None
@@ -1453,12 +1357,10 @@ def _add_atom_density_analytic(
 def _prepare_layer(
     layer: Layer,
     wavelength: float,
-    q0: np.ndarray,
     poscar_dir: str | Path | None,
     form_factor_dir: str | Path | None,
     workspace: DynamicWorkspace | None = None,
     *,
-    density_method: str = "sampled",
     density_qpass: float = 0.0,
     density_qstop: float = 30.0,
     density_tail_tol: float = 1e-10,
@@ -1469,85 +1371,55 @@ def _prepare_layer(
         poscar_path = Path(poscar_dir) / poscar_path
     poscar_path = poscar_path.resolve()
     form_factor_path = None if form_factor_dir is None else str(Path(form_factor_dir).resolve())
-    if density_method == "analytic":
-        material_key = (
-            "analytic",
-            str(poscar_path),
-            float(wavelength),
-            float(density_qpass),
-            float(density_qstop),
-            float(density_tail_tol),
-            float(density_internal_dq),
-            form_factor_path,
-        )
-    else:
-        material_key = (
-            "sampled",
-            str(poscar_path),
-            float(wavelength),
-            float(q0[0]),
-            float(q0[-1]),
-            len(q0),
-            form_factor_path,
-        )
+    material_key = (
+        str(poscar_path),
+        float(wavelength),
+        float(density_qpass),
+        float(density_qstop),
+        float(density_tail_tol),
+        float(density_internal_dq),
+        form_factor_path,
+    )
     material = None if workspace is None else workspace.materials.get(material_key)
     if material is None:
         structure = read_poscar(poscar_path)
-        if density_method == "analytic":
-            kernels: list[_AtomicDensityKernel] = []
-            for element, count in zip(structure.types, structure.type_counts):
-                atomic_number = ELEMENT_SYMBOLS.index(element) + 1
-                kernel_key = (
-                    atomic_number,
-                    float(wavelength),
-                    float(density_qpass),
-                    float(density_qstop),
-                    float(density_tail_tol),
-                    float(density_internal_dq),
-                    form_factor_path,
+        kernels: list[_AtomicDensityKernel] = []
+        for element, count in zip(structure.types, structure.type_counts):
+            atomic_number = ELEMENT_SYMBOLS.index(element) + 1
+            kernel_key = (
+                atomic_number,
+                float(wavelength),
+                float(density_qpass),
+                float(density_qstop),
+                float(density_tail_tol),
+                float(density_internal_dq),
+                form_factor_path,
+            )
+            kernel = (
+                None
+                if workspace is None
+                else workspace.atomic_kernels.get(kernel_key)
+            )
+            if kernel is None:
+                coefficients = read_form_factor_coefficients(
+                    atomic_number, wavelength, form_factor_dir
                 )
-                kernel = (
-                    None
-                    if workspace is None
-                    else workspace.atomic_kernels.get(kernel_key)
+                kernel = _build_atomic_density_kernel(
+                    coefficients.a[0],
+                    coefficients.b[0],
+                    float(coefficients.c[0]),
+                    float(coefficients.f_1[0]),
+                    float(coefficients.f_2[0]),
+                    debye_waller_prefactor(atomic_number),
+                    density_qpass,
+                    density_qstop,
+                    density_tail_tol,
+                    density_internal_dq,
                 )
-                if kernel is None:
-                    coefficients = read_form_factor_coefficients(
-                        atomic_number, wavelength, form_factor_dir
-                    )
-                    kernel = _build_atomic_density_kernel(
-                        coefficients.a[0],
-                        coefficients.b[0],
-                        float(coefficients.c[0]),
-                        float(coefficients.f_1[0]),
-                        float(coefficients.f_2[0]),
-                        debye_waller_prefactor(atomic_number),
-                        density_qpass,
-                        density_qstop,
-                        density_tail_tol,
-                        density_internal_dq,
-                    )
-                    if workspace is not None:
-                        workspace.atomic_kernels[kernel_key] = kernel
-                kernels.extend([kernel] * int(count))
-            material = _PreparedMaterial(structure=structure, kernels=tuple(kernels))
-        else:
-            ff = np.zeros((len(q0), int(np.sum(structure.type_counts))), dtype=complex)
-            cursor = 0
-            for element, count in zip(structure.types, structure.type_counts):
-                atomic_number = ELEMENT_SYMBOLS.index(element) + 1
-                f_q, _, _ = form_factors(
-                    q0,
-                    read_form_factor_coefficients(atomic_number, wavelength, form_factor_dir),
-                    1.0,
-                )
-                f_q = f_q * np.exp(
-                    -debye_waller_prefactor(atomic_number) * (q0 / (4.0 * np.pi)) ** 2
-                )
-                for _ in range(int(count)):
-                    ff[:, cursor] = f_q
-                    cursor += 1
-            material = _PreparedMaterial(structure=structure, ff=ff)
+                if workspace is not None:
+                    workspace.atomic_kernels[kernel_key] = kernel
+            kernels.extend([kernel] * int(count))
+        material = _PreparedMaterial(structure=structure, kernels=tuple(kernels))
         if workspace is not None:
             workspace.materials[material_key] = material
             workspace.material_builds += 1
@@ -1561,7 +1433,6 @@ def _prepare_layer(
         "area": area,
         "lat_par": float(np.linalg.norm(scaling)),
         "z_s": z_s,
-        "ff": material.ff,
         "kernels": material.kernels,
     }
 
@@ -1575,9 +1446,6 @@ def _substrate_cache_key(
     vacuum_thick: float,
     slices: int,
     max_q0: float,
-    step_q0: float,
-    backend: str,
-    density_method: str,
     density_tail_tol: float,
     density_internal_dq: float,
 ) -> tuple[object, ...]:
@@ -1595,54 +1463,8 @@ def _substrate_cache_key(
         float(vacuum_thick),
         int(slices),
         float(max_q0),
-        float(step_q0),
-        backend,
-        density_method,
         float(density_tail_tol),
         float(density_internal_dq),
-    )
-
-
-def _build_substrate_state(
-    substrate: dict[str, np.ndarray | float | PoscarStructure],
-    q0: np.ndarray,
-    vacuum_thick: float,
-    slices: int,
-    add_atom_density,
-) -> _SubstrateState:
-    lat_par = float(substrate["lat_par"])
-    area = float(substrate["area"])
-    z_s = np.asarray(substrate["z_s"], dtype=float)
-    ff = np.asarray(substrate["ff"], dtype=complex)
-    dz = lat_par / slices
-    vacuum_slices = matlab_round(vacuum_thick / dz)
-    vacuum_thick_exact = dz * vacuum_slices
-    support_end = float(np.max(z_s) + 3.0 * lat_par)
-    z = np.arange(-vacuum_thick_exact, support_end + dz * 0.5, dz)
-    rho_e = np.zeros_like(z, dtype=complex)
-    for repeat in range(3):
-        for atom_idx, z_atom in enumerate(z_s):
-            add_atom_density(
-                rho_e,
-                z,
-                z_atom + lat_par * repeat,
-                lat_par,
-                area,
-                q0,
-                ff[:, atom_idx],
-            )
-
-    # MATLAB's adjacent inclusive ranges share their boundary sample.
-    substrate_end = vacuum_slices + slices * 2 - 1
-    rho_0 = rho_e[: vacuum_slices + slices]
-    rho_1 = rho_e[vacuum_slices + slices - 1 : substrate_end + 1]
-    return _SubstrateState(
-        dz=dz,
-        vacuum_slices=vacuum_slices,
-        substrate_end=substrate_end,
-        rho_prefix=rho_e,
-        rho_0r=rho_0[::-1].copy(),
-        rho_1r=rho_1[::-1].copy(),
     )
 
 
@@ -1680,7 +1502,7 @@ def _substrate_density_piece_analytic(
     return rho
 
 
-def _build_analytic_substrate_state(
+def _build_substrate_state(
     substrate: dict[str, object],
     vacuum_thick: float,
     slices: int,
@@ -1734,19 +1556,3 @@ def _layer_geometry(structure: PoscarStructure, layer: Layer) -> tuple[np.ndarra
     area = float(abs(np.linalg.norm(np.cross(transverse[0], transverse[1]))))
     unit_cell_volume = float(abs(np.dot(scaling, np.cross(transverse[0], transverse[1]))))
     return scaling, area, unit_cell_volume
-
-
-def _add_atom_density_numpy(
-    rho_e: np.ndarray,
-    z: np.ndarray,
-    pos_z: float,
-    lat_par: float,
-    area: float,
-    q0: np.ndarray,
-    f_q0: np.ndarray,
-) -> None:
-    idx = (z >= pos_z - lat_par) & (z <= pos_z + lat_par)
-    if not np.any(idx):
-        return
-    phase = np.exp(1j * q0[:, np.newaxis] * (z[idx][np.newaxis, :] - pos_z))
-    rho_e[idx] += np.trapezoid(f_q0[:, np.newaxis] * phase, q0, axis=0) / area

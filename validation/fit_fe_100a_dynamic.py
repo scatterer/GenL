@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from genl import Control, Instrument, Layer, calc_dynamic_density  # noqa: E402
+from genl.background import centered_polynomial_background  # noqa: E402
 from genl.convolution import gauss_conv  # noqa: E402
 from genl.paths import EXAMPLE_DATA_DIR, FORM_FACTOR_DIR, STRUCTURE_DIR  # noqa: E402
 
@@ -113,7 +114,6 @@ class DynamicModel:
             vacuum_thick=5.0,
             slices=50,
             max_q0=30.0,
-            step_q0=0.1,
         )
         self.last_z = result.z
         self.last_rho_e = result.rho_e
@@ -144,7 +144,9 @@ class DynamicModel:
         resolution, amplitude, bkg_a, bkg_b = params[4:8]
         reflectivity = self.reflectivity(params)
         broadened = gauss_conv(self.q, reflectivity, resolution)
-        return amplitude * broadened + bkg_a * self.q + bkg_b
+        return amplitude * broadened + centered_polynomial_background(
+            self.q, bkg_a, bkg_b
+        )
 
     def residual_vector(self, params: np.ndarray) -> np.ndarray:
         floor = max(np.min(self.observed[self.observed > 0]) * 0.1, 1e-12)
@@ -426,8 +428,8 @@ def main() -> int:
     print(f"resolution FWHM in Q: {metrics['resolution_fwhm_Q']:.6e} 1/A")
     print(f"scale: {metrics['scale']:.6e}")
     print(
-        "linear background: "
-        f"{metrics['background_slope']:.6e} * Q + {metrics['background_intercept']:.6e}"
+        "centered linear background: "
+        f"{metrics['background_intercept']:.6e} + {metrics['background_slope']:.6e} * x"
     )
     print(f"mean abs log10 error: {metrics['mean_abs_log10_error']:.6e}")
     print(f"RMSE: {metrics['rmse_cps']:.6e} cps")

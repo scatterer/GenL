@@ -11,6 +11,7 @@ from scipy.optimize import differential_evolution, least_squares, minimize
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from genl.background import centered_polynomial_background  # noqa: E402
 from genl.convolution import gauss_conv  # noqa: E402
 from genl.form_factors import form_factors, read_form_factor_coefficients  # noqa: E402
 from genl.paths import EXAMPLE_DATA_DIR, FORM_FACTOR_DIR  # noqa: E402
@@ -66,7 +67,7 @@ def predict(
 ) -> np.ndarray:
     d_spacing, n_planes, resolution, amplitude, bkg_a, bkg_b = params
     shape = fe_film_shape(q, wavelength, f, mu, d_spacing, n_planes, resolution)
-    return amplitude * shape + bkg_a * q + bkg_b
+    return amplitude * shape + centered_polynomial_background(q, bkg_a, bkg_b)
 
 
 def residual_vector(
@@ -365,8 +366,8 @@ def main() -> int:
     print(f"resolution FWHM in Q: {metrics['resolution_fwhm_Q']:.6e} 1/A")
     print(f"scale: {metrics['scale']:.6e}")
     print(
-        "linear background: "
-        f"{metrics['background_slope']:.6e} * Q + {metrics['background_intercept']:.6e}"
+        "centered linear background: "
+        f"{metrics['background_intercept']:.6e} + {metrics['background_slope']:.6e} * x"
     )
     print(f"mean abs log10 error: {metrics['mean_abs_log10_error']:.6e}")
     print(f"RMSE: {metrics['rmse_cps']:.6e} cps")

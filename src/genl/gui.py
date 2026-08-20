@@ -18,6 +18,12 @@ from .paths import EXAMPLE_DATA_DIR, FORM_FACTOR_DIR, REPOSITORY_ROOT, STACK_DIR
 ROOT = REPOSITORY_ROOT
 CU_K_ALPHA_WAVELENGTH = 1.5406
 STRAIN_KEYS = ("bottom_amplitude", "bottom_extent", "top_amplitude", "top_extent")
+STACK_STRAIN_FIELDS = (
+    ("bottom_strain_amplitude", "Bottom amplitude", -0.4, 0.4),
+    ("bottom_strain_end", "Bottom extent (atomic positions)", 0.0, 20.0),
+    ("top_strain_amplitude", "Top amplitude", -0.4, 0.4),
+    ("top_strain_end", "Top extent (atomic positions)", 0.0, 20.0),
+)
 GENL_DOI_URL = "https://doi.org/10.1107/S1600576726002566"
 PROJECT_FORMAT = "GenL GUI project"
 PROJECT_VERSION = 1
@@ -55,6 +61,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from scipy.optimize import differential_evolution, least_squares, minimize
 
+from .background import centered_polynomial_background  # noqa: E402
 from .convolution import gauss_conv  # noqa: E402
 from .dynamic import validate_density_sampling  # noqa: E402
 from .fit_models import DynamicModel, roughness_distribution  # noqa: E402
@@ -414,8 +421,6 @@ def fit_resume_signature(
         str(resolve_data_path(str(config["data_path"]))),
         config["model"],
         float(config["wavelength"]),
-        config["dynamic_backend"],
-        config.get("density_method", "sampled"),
         int(config.get("density_slices", 100)),
         float(config.get("density_max_q0", 30.0)),
         float(config["twotheta_min"]),
@@ -605,7 +610,7 @@ class KinematicModel:
     def _parse_optional_params(
         self, params: np.ndarray
     ) -> tuple[float, float, float, float, float, float, float, float, float]:
-        offset = 6
+        offset = 7
         if self.include_substrate:
             substrate_intensity, substrate_width, substrate_d = params[offset : offset + 3]
             offset += 3
@@ -641,7 +646,7 @@ class KinematicModel:
         top_amp: float,
         top_end: float,
     ) -> np.ndarray:
-        d_spacing, _, resolution, _, _, _ = params[:6]
+        d_spacing, _, resolution, _, _, _, _ = params[:7]
         positions = strained_plane_positions(
             d_spacing, n_planes, bottom_amp, bottom_end, top_amp, top_end
         )
@@ -663,7 +668,7 @@ class KinematicModel:
         return gauss_conv(self.q, intensity, resolution) * absorption * polarization * lorentz
 
     def predict(self, params: np.ndarray) -> np.ndarray:
-        d_spacing, n_planes, resolution, amplitude, bkg_a, bkg_b = params[:6]
+        d_spacing, n_planes, resolution, amplitude, bkg_a, bkg_b, bkg_c = params[:7]
         (
             substrate_intensity,
             substrate_width,
@@ -687,7 +692,9 @@ class KinematicModel:
 
         if substrate_sigma > 0:
             shape = shape * np.exp(-((self.q * substrate_sigma) ** 2))
-        predicted = amplitude * shape + bkg_a * self.q + bkg_b
+        predicted = amplitude * shape + centered_polynomial_background(
+            self.q, bkg_a, bkg_b, bkg_c
+        )
         if self.include_substrate:
             predicted = predicted + kinematic_substrate_peak(
                 self.twotheta,
@@ -770,8 +777,9 @@ def kinematic_bounds_and_start(
         planes = (sample.thickness / d0, 0.60 * sample.thickness / d0, 1.20 * sample.thickness / d0)
         resolution = (0.005, 0.005 / 20.0, 0.005 * 5.0)
         scale = (0.0069, 1e-3, 0.05)
-        bkg_a = (0.0, 0.0, 1.0)
+        bkg_a = (0.0, -3.0, 3.0)
         bkg_b = (0.1, 0.0, 3.0)
+        bkg_c = (0.0, -3.0, 3.0)
     else:
         d_spacing = kinematic_settings["d_spacing"]
         planes = kinematic_settings["planes"]
@@ -779,6 +787,7 @@ def kinematic_bounds_and_start(
         scale = kinematic_settings["scale"]
         bkg_a = kinematic_settings["bkg_a"]
         bkg_b = kinematic_settings["bkg_b"]
+        bkg_c = kinematic_settings.get("bkg_c", (0.0, -3.0, 3.0))
     bounds_array = np.array(
         [
             [d_spacing[1], d_spacing[2]],
@@ -787,11 +796,20 @@ def kinematic_bounds_and_start(
             [scale[1], scale[2]],
             [bkg_a[1], bkg_a[2]],
             [bkg_b[1], bkg_b[2]],
+            [bkg_c[1], bkg_c[2]],
         ],
         dtype=float,
     )
     start = np.array(
-        [d_spacing[0], planes[0], resolution[0], scale[0], bkg_a[0], bkg_b[0]],
+        [
+            d_spacing[0],
+            planes[0],
+            resolution[0],
+            scale[0],
+            bkg_a[0],
+            bkg_b[0],
+            bkg_c[0],
+        ],
         dtype=float,
     )
     if include_substrate:
@@ -854,13 +872,15 @@ def dynamic_bounds_and_start(
     if dynamic_fit_settings is None:
         resolution = (0.0054205, 0.0001, 0.006)
         intensity_scale = (5000.8437, 50.0, 1_000_000.0)
-        bkg_a = (5.1469e-4, 0.0, 1.0)
+        bkg_a = (5.1469e-4, -0.1, 0.1)
         bkg_b = (1.2366e-7, 0.0, 0.1)
+        bkg_c = (0.0, -0.1, 0.1)
     else:
         resolution = dynamic_fit_settings["resolution"]
         intensity_scale = dynamic_fit_settings["intensity_scale"]
         bkg_a = dynamic_fit_settings["bkg_a"]
         bkg_b = dynamic_fit_settings["bkg_b"]
+        bkg_c = dynamic_fit_settings.get("bkg_c", (0.0, -0.1, 0.1))
     substrate_scale = (
         (sample.substrate_scale, sample.substrate_scale * 0.995, sample.substrate_scale * 1.005)
         if substrate_settings is None
@@ -876,6 +896,7 @@ def dynamic_bounds_and_start(
             [intensity_scale[1], intensity_scale[2]],
             [bkg_a[1], bkg_a[2]],
             [bkg_b[1], bkg_b[2]],
+            [bkg_c[1], bkg_c[2]],
             [substrate_scale[1], substrate_scale[2]],
         ],
         dtype=float,
@@ -890,6 +911,7 @@ def dynamic_bounds_and_start(
             intensity_scale[0],
             bkg_a[0],
             bkg_b[0],
+            bkg_c[0],
             substrate_scale[0],
         ],
         dtype=float,
@@ -978,7 +1000,7 @@ def summarize_fit(
     substrate_settings: dict[str, object] | None = None,
 ) -> str:
     if model_name == "Kinematic":
-        offset = 6
+        offset = 7
         substrate_text = ""
         if include_kinematic_substrate:
             substrate_text = (
@@ -994,7 +1016,8 @@ def summarize_fit(
             f"coherent thickness: {matlab_round(params[1]) * params[0]:.3f} A\n"
             f"resolution FWHM Q: {params[2]:.6e} 1/A\n"
             f"scale: {params[3]:.6e}\n"
-            f"background: {params[4]:.6e} * Q + {params[5]:.6e}\n"
+            f"centered background: {params[5]:.6e} + {params[4]:.6e} x "
+            f"+ {params[6]:.6e} x^2\n"
             + substrate_text
             + optional_param_summary(params, offset, include_strain, include_roughness, "planes")
             + f"mean abs log10 error: {cost:.6e}\n"
@@ -1027,9 +1050,10 @@ def summarize_fit(
         f"coherent thickness: {matlab_round(params[0]) * dynamic_period * params[1]:.3f} A\n"
         f"resolution FWHM Q: {params[4]:.6e} 1/A\n"
         f"scale: {params[5]:.6e}\n"
-        f"background: {params[6]:.6e} * Q + {params[7]:.6e}\n"
-        + f"substrate lattice scale: {params[8]:.8f}\n"
-        + optional_param_summary(params, 9, include_strain, include_roughness, "layers")
+        f"centered background: {params[7]:.6e} + {params[6]:.6e} x "
+        f"+ {params[8]:.6e} x^2\n"
+        + f"substrate lattice scale: {params[9]:.8f}\n"
+        + optional_param_summary(params, 10, include_strain, include_roughness, "layers")
         + f"mean abs log10 error: {cost:.6e}\n"
         f"RMSE: {rmse:.6e} cps"
     )
@@ -1087,11 +1111,14 @@ class FitApp:
         self.kin_scale_min_var = tk.StringVar(value="0.001")
         self.kin_scale_max_var = tk.StringVar(value="0.05")
         self.kin_bkg_a_start_var = tk.StringVar(value="0.0")
-        self.kin_bkg_a_min_var = tk.StringVar(value="0.0")
-        self.kin_bkg_a_max_var = tk.StringVar(value="1.0")
+        self.kin_bkg_a_min_var = tk.StringVar(value="-3.0")
+        self.kin_bkg_a_max_var = tk.StringVar(value="3.0")
         self.kin_bkg_b_start_var = tk.StringVar(value="0.1")
         self.kin_bkg_b_min_var = tk.StringVar(value="0.0")
         self.kin_bkg_b_max_var = tk.StringVar(value="3.0")
+        self.kin_bkg_c_start_var = tk.StringVar(value="0.0")
+        self.kin_bkg_c_min_var = tk.StringVar(value="-3.0")
+        self.kin_bkg_c_max_var = tk.StringVar(value="3.0")
         self.kin_debye_var = tk.StringVar(value=f"{SAMPLES['Fe 10 nm'].debye_waller_coeff:.6g}")
         self.kin_d_fit_var = tk.StringVar(value="")
         self.kin_planes_fit_var = tk.StringVar(value="")
@@ -1099,6 +1126,7 @@ class FitApp:
         self.kin_scale_fit_var = tk.StringVar(value="")
         self.kin_bkg_a_fit_var = tk.StringVar(value="")
         self.kin_bkg_b_fit_var = tk.StringVar(value="")
+        self.kin_bkg_c_fit_var = tk.StringVar(value="")
         self.kin_debye_fit_var = tk.StringVar(value="")
         self.kin_d_fit_enabled_var = tk.BooleanVar(value=True)
         self.kin_planes_fit_enabled_var = tk.BooleanVar(value=True)
@@ -1106,6 +1134,7 @@ class FitApp:
         self.kin_scale_fit_enabled_var = tk.BooleanVar(value=True)
         self.kin_bkg_a_fit_enabled_var = tk.BooleanVar(value=True)
         self.kin_bkg_b_fit_enabled_var = tk.BooleanVar(value=True)
+        self.kin_bkg_c_fit_enabled_var = tk.BooleanVar(value=False)
         self.kin_substrate_var = tk.BooleanVar(value=False)
         self.kin_substrate_intensity_start_var = tk.StringVar(value="51.0")
         self.kin_substrate_intensity_min_var = tk.StringVar(value="0.0")
@@ -1153,21 +1182,24 @@ class FitApp:
         self.dynamic_intensity_max_var = tk.StringVar(value="1000000.0")
         self.dynamic_intensity_fit_var = tk.StringVar(value="")
         self.dynamic_bkg_a_start_var = tk.StringVar(value="5.1469e-4")
-        self.dynamic_bkg_a_min_var = tk.StringVar(value="0.0")
-        self.dynamic_bkg_a_max_var = tk.StringVar(value="1.0")
+        self.dynamic_bkg_a_min_var = tk.StringVar(value="-0.1")
+        self.dynamic_bkg_a_max_var = tk.StringVar(value="0.1")
         self.dynamic_bkg_a_fit_var = tk.StringVar(value="")
         self.dynamic_bkg_b_start_var = tk.StringVar(value="1.2366e-7")
         self.dynamic_bkg_b_min_var = tk.StringVar(value="0.0")
         self.dynamic_bkg_b_max_var = tk.StringVar(value="0.1")
         self.dynamic_bkg_b_fit_var = tk.StringVar(value="")
-        self.dynamic_backend_var = tk.StringVar(value="auto")
-        self.density_method_var = tk.StringVar(value="sampled")
+        self.dynamic_bkg_c_start_var = tk.StringVar(value="0.0")
+        self.dynamic_bkg_c_min_var = tk.StringVar(value="-0.1")
+        self.dynamic_bkg_c_max_var = tk.StringVar(value="0.1")
+        self.dynamic_bkg_c_fit_var = tk.StringVar(value="")
         self.density_slices_var = tk.StringVar(value="100")
         self.density_max_q0_var = tk.StringVar(value="30.0")
         self.dynamic_resolution_fit_enabled_var = tk.BooleanVar(value=True)
         self.dynamic_intensity_fit_enabled_var = tk.BooleanVar(value=True)
         self.dynamic_bkg_a_fit_enabled_var = tk.BooleanVar(value=True)
         self.dynamic_bkg_b_fit_enabled_var = tk.BooleanVar(value=True)
+        self.dynamic_bkg_c_fit_enabled_var = tk.BooleanVar(value=False)
         self.substrate_filename_var = tk.StringVar(value=SAMPLES["Fe 10 nm"].substrate_filename)
         self.substrate_direction_var = tk.StringVar(value=str(SAMPLES["Fe 10 nm"].substrate_direction))
         self.substrate_n_var = tk.StringVar(value=f"{SAMPLES['Fe 10 nm'].substrate_n:.6g}")
@@ -1227,7 +1259,13 @@ class FitApp:
         self.stack_sampling_label_var = tk.StringVar(value="Points per degree")
         self.stack_calculation_fit_enabled_vars = {
             key: tk.BooleanVar(value=False)
-            for key in ("resolution", "intensity_scale", "background_a", "background_b")
+            for key in (
+                "resolution",
+                "intensity_scale",
+                "background_a",
+                "background_b",
+                "background_c",
+            )
         }
         self.stack_calculation_fit_vars = {
             key: tk.StringVar(value="")
@@ -1280,6 +1318,7 @@ class FitApp:
             font=("TkDefaultFont", 9),
         )
         style.configure("TCheckbutton", background=UI_COLORS["panel"])
+        style.configure("TRadiobutton", background=UI_COLORS["panel"])
         style.configure("TEntry", fieldbackground=UI_COLORS["entry"])
         style.map(
             "TEntry",
@@ -1344,6 +1383,24 @@ class FitApp:
             width=14,
         )
         self.model_combo.grid(row=0, column=1, sticky="ew", padx=(4, 8), pady=2)
+
+        ttk.Label(run_frame, text="Sample configuration").grid(
+            row=0, column=2, sticky="w"
+        )
+        sample_configuration = ttk.Frame(run_frame, style="Panel.TFrame")
+        sample_configuration.grid(row=0, column=3, sticky="ew", pady=2)
+        ttk.Radiobutton(
+            sample_configuration,
+            text="Film",
+            variable=self.stack_enabled_var,
+            value=False,
+        ).pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            sample_configuration,
+            text="Superlattice",
+            variable=self.stack_enabled_var,
+            value=True,
+        ).pack(side=tk.LEFT, padx=(8, 0))
 
         ttk.Label(run_frame, text="Experimental data file").grid(row=1, column=0, sticky="w")
         ttk.Entry(run_frame, textvariable=self.data_path_var, width=42).grid(
@@ -1446,8 +1503,17 @@ class FitApp:
         for column in (1, 3):
             run_frame.columnconfigure(column, weight=1)
 
-        parameter_tabs = ttk.Notebook(sidebar)
-        parameter_tabs.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
+        self.workspace_frame = ttk.Frame(sidebar)
+        self.workspace_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
+        self.workspace_frame.rowconfigure(0, weight=1)
+        self.workspace_frame.columnconfigure(0, weight=1)
+
+        self.film_container = ttk.LabelFrame(
+            self.workspace_frame, text="Film simulation and fitting"
+        )
+        self.film_container.grid(row=0, column=0, sticky="nsew")
+        parameter_tabs = self.film_parameter_tabs = ttk.Notebook(self.film_container)
+        parameter_tabs.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 4))
 
         kinematic_panel = ttk.Frame(parameter_tabs, style="Panel.TFrame")
         parameter_tabs.add(kinematic_panel, text="Kinematic")
@@ -1476,6 +1542,7 @@ class FitApp:
             ("Intensity scale", self.kin_scale_fit_enabled_var, self.kin_scale_start_var, self.kin_scale_min_var, self.kin_scale_max_var, self.kin_scale_fit_var),
             ("Background slope (a)", self.kin_bkg_a_fit_enabled_var, self.kin_bkg_a_start_var, self.kin_bkg_a_min_var, self.kin_bkg_a_max_var, self.kin_bkg_a_fit_var),
             ("Background offset (b)", self.kin_bkg_b_fit_enabled_var, self.kin_bkg_b_start_var, self.kin_bkg_b_min_var, self.kin_bkg_b_max_var, self.kin_bkg_b_fit_var),
+            ("Background curvature (c)", self.kin_bkg_c_fit_enabled_var, self.kin_bkg_c_start_var, self.kin_bkg_c_min_var, self.kin_bkg_c_max_var, self.kin_bkg_c_fit_var),
         ]
         for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(kinematic_controls, start=1):
             ttk.Label(self.kinematic_frame, text=label).grid(row=row, column=0, sticky="w")
@@ -1639,41 +1706,23 @@ class FitApp:
         self.dynamic_fit_frame = ttk.Frame(dynamic_tabs, padding=8, style="Panel.TFrame")
         dynamic_tabs.add(self.dynamic_fit_frame, text="Calculation and fit")
         self._add_accent_strip(self.dynamic_fit_frame, UI_COLORS["fit"])
-        ttk.Label(self.dynamic_fit_frame, text="Dynamic backend").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(
-            self.dynamic_fit_frame,
-            textvariable=self.dynamic_backend_var,
-            values=("auto", "reflection", "fused", "legacy"),
-            state="readonly",
-            width=10,
-        ).grid(row=0, column=2, sticky="w")
-        ttk.Label(self.dynamic_fit_frame, text="Density method").grid(
-            row=1, column=0, sticky="w"
-        )
-        ttk.Combobox(
-            self.dynamic_fit_frame,
-            textvariable=self.density_method_var,
-            values=("sampled", "analytic"),
-            state="readonly",
-            width=10,
-        ).grid(row=1, column=2, sticky="w")
         ttk.Label(self.dynamic_fit_frame, text="Density slices per cell").grid(
-            row=2, column=0, sticky="w"
+            row=0, column=0, sticky="w"
         )
         ttk.Entry(
             self.dynamic_fit_frame, textvariable=self.density_slices_var, width=10
-        ).grid(row=2, column=2, sticky="w")
+        ).grid(row=0, column=2, sticky="w")
         ttk.Label(self.dynamic_fit_frame, text="Density Q max (1/Å)").grid(
-            row=3, column=0, sticky="w"
+            row=1, column=0, sticky="w"
         )
         ttk.Entry(
             self.dynamic_fit_frame, textvariable=self.density_max_q0_var, width=10
-        ).grid(row=3, column=2, sticky="w")
-        ttk.Label(self.dynamic_fit_frame, text="Fit").grid(row=4, column=1, sticky="ew")
-        ttk.Label(self.dynamic_fit_frame, text="Value").grid(row=4, column=2, sticky="ew")
-        ttk.Label(self.dynamic_fit_frame, text="Min").grid(row=4, column=3, sticky="ew")
-        ttk.Label(self.dynamic_fit_frame, text="Max").grid(row=4, column=4, sticky="ew")
-        ttk.Label(self.dynamic_fit_frame, text="Range").grid(row=4, column=5, sticky="ew")
+        ).grid(row=1, column=2, sticky="w")
+        ttk.Label(self.dynamic_fit_frame, text="Fit").grid(row=2, column=1, sticky="ew")
+        ttk.Label(self.dynamic_fit_frame, text="Value").grid(row=2, column=2, sticky="ew")
+        ttk.Label(self.dynamic_fit_frame, text="Min").grid(row=2, column=3, sticky="ew")
+        ttk.Label(self.dynamic_fit_frame, text="Max").grid(row=2, column=4, sticky="ew")
+        ttk.Label(self.dynamic_fit_frame, text="Range").grid(row=2, column=5, sticky="ew")
         dynamic_fit_controls = [
             (
                 "Resolution (deg)",
@@ -1707,8 +1756,16 @@ class FitApp:
                 self.dynamic_bkg_b_max_var,
                 self.dynamic_bkg_b_fit_var,
             ),
+            (
+                "Background curvature (c)",
+                self.dynamic_bkg_c_fit_enabled_var,
+                self.dynamic_bkg_c_start_var,
+                self.dynamic_bkg_c_min_var,
+                self.dynamic_bkg_c_max_var,
+                self.dynamic_bkg_c_fit_var,
+            ),
         ]
-        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(dynamic_fit_controls, start=5):
+        for row, (label, fit_enabled_var, start_var, min_var, max_var, fit_var) in enumerate(dynamic_fit_controls, start=3):
             ttk.Label(self.dynamic_fit_frame, text=label).grid(row=row, column=0, sticky="w")
             ttk.Checkbutton(self.dynamic_fit_frame, variable=fit_enabled_var).grid(row=row, column=1, sticky="ew")
             ttk.Entry(self.dynamic_fit_frame, textvariable=start_var, width=7).grid(row=row, column=2, sticky="ew")
@@ -1874,7 +1931,7 @@ class FitApp:
         rough_frame.columnconfigure(5, weight=1)
 
         optimization_frame = ttk.Frame(parameter_tabs, padding=8, style="Panel.TFrame")
-        parameter_tabs.add(optimization_frame, text="Optimization / simulation")
+        parameter_tabs.add(optimization_frame, text="Optimization settings")
         self._add_accent_strip(optimization_frame, UI_COLORS["fit"])
         optimization_controls = [
             ("Seed", self.seed_var, 0, 0),
@@ -1892,16 +1949,13 @@ class FitApp:
         optimization_frame.columnconfigure(1, weight=1)
         optimization_frame.columnconfigure(3, weight=1)
 
-        stack_container = ttk.LabelFrame(sidebar, text="Superlattice simulation and fitting")
-        stack_container.pack(fill=tk.X, pady=(0, 8))
-        self._add_accent_strip(stack_container, UI_COLORS["stack"])
-        ttk.Checkbutton(
-            stack_container,
-            text="Use superlattice (replaces film/substrate layers)",
-            variable=self.stack_enabled_var,
-        ).pack(anchor="w", padx=8, pady=(6, 2))
-        stack_tabs = ttk.Notebook(stack_container)
-        stack_tabs.pack(fill=tk.X, padx=4, pady=(0, 4))
+        self.stack_container = ttk.LabelFrame(
+            self.workspace_frame, text="Superlattice simulation and fitting"
+        )
+        self.stack_container.grid(row=0, column=0, sticky="nsew")
+        self._add_accent_strip(self.stack_container, UI_COLORS["stack"])
+        stack_tabs = ttk.Notebook(self.stack_container)
+        stack_tabs.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 4))
 
         stack_structure_panel = ttk.Frame(stack_tabs, padding=8, style="Panel.TFrame")
         stack_tabs.add(stack_structure_panel, text="Structure")
@@ -1987,7 +2041,6 @@ class FitApp:
                 stack_layers_window, width=event.width
             ),
         )
-        self._populate_stack_rows(self.stack_document)
         ttk.Button(
             stack_structure_panel,
             text="Add repeated layer",
@@ -2003,6 +2056,44 @@ class FitApp:
         for column in (1, 2, 3):
             stack_structure_panel.columnconfigure(column, weight=1)
         stack_structure_panel.rowconfigure(5, weight=1)
+
+        stack_strain_panel = ttk.Frame(stack_tabs, padding=8, style="Panel.TFrame")
+        stack_tabs.add(stack_strain_panel, text="Strain")
+        stack_strain_scroller = ttk.Frame(stack_strain_panel, style="Panel.TFrame")
+        stack_strain_scroller.pack(fill=tk.BOTH, expand=True)
+        self.stack_strain_canvas = tk.Canvas(
+            stack_strain_scroller,
+            height=260,
+            background=UI_COLORS["panel"],
+            highlightthickness=0,
+        )
+        stack_strain_scrollbar = ttk.Scrollbar(
+            stack_strain_scroller,
+            orient=tk.VERTICAL,
+            command=self.stack_strain_canvas.yview,
+        )
+        self.stack_strain_canvas.configure(yscrollcommand=stack_strain_scrollbar.set)
+        self.stack_strain_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        stack_strain_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.stack_strain_frame = ttk.Frame(
+            self.stack_strain_canvas, style="Panel.TFrame"
+        )
+        stack_strain_window = self.stack_strain_canvas.create_window(
+            (0, 0), window=self.stack_strain_frame, anchor="nw"
+        )
+        self.stack_strain_frame.bind(
+            "<Configure>",
+            lambda _event: self.stack_strain_canvas.configure(
+                scrollregion=self.stack_strain_canvas.bbox("all")
+            ),
+        )
+        self.stack_strain_canvas.bind(
+            "<Configure>",
+            lambda event: self.stack_strain_canvas.itemconfigure(
+                stack_strain_window, width=event.width
+            ),
+        )
+        self._populate_stack_rows(self.stack_document)
 
         stack_calculation_panel = ttk.Frame(stack_tabs, padding=8, style="Panel.TFrame")
         stack_tabs.add(stack_calculation_panel, text="Calculation")
@@ -2067,6 +2158,7 @@ class FitApp:
             ("intensity_scale", "Intensity scale", self.dynamic_intensity_start_var, self.dynamic_intensity_min_var, self.dynamic_intensity_max_var),
             ("background_a", "Background slope (a)", self.dynamic_bkg_a_start_var, self.dynamic_bkg_a_min_var, self.dynamic_bkg_a_max_var),
             ("background_b", "Background offset (b)", self.dynamic_bkg_b_start_var, self.dynamic_bkg_b_min_var, self.dynamic_bkg_b_max_var),
+            ("background_c", "Background curvature (c)", self.dynamic_bkg_c_start_var, self.dynamic_bkg_c_min_var, self.dynamic_bkg_c_max_var),
         )
         for row, values in enumerate(dynamic_rows, start=2):
             _widgets, entries, indicator = add_stack_calculation_row(row, *values)
@@ -2076,35 +2168,9 @@ class FitApp:
             self.stack_model_calculation_indicators.append(indicator)
 
         self.stack_dynamic_calculation_widgets: list[tk.Widget] = []
-        backend_label = ttk.Label(stack_calculation_panel, text="Dynamic backend")
-        backend_label.grid(row=6, column=0, sticky="w", pady=2)
-        backend_widget = ttk.Combobox(
-            stack_calculation_panel,
-            textvariable=self.dynamic_backend_var,
-            values=("auto", "reflection", "fused", "legacy"),
-            state="readonly",
-            width=12,
-        )
-        backend_widget.grid(row=6, column=2, columnspan=3, sticky="ew", padx=(4, 0), pady=2)
-        self.stack_dynamic_calculation_widgets.extend((backend_label, backend_widget))
-        density_method_label = ttk.Label(stack_calculation_panel, text="Density method")
-        density_method_label.grid(row=7, column=0, sticky="w", pady=2)
-        density_method_widget = ttk.Combobox(
-            stack_calculation_panel,
-            textvariable=self.density_method_var,
-            values=("sampled", "analytic"),
-            state="readonly",
-            width=12,
-        )
-        density_method_widget.grid(
-            row=7, column=2, columnspan=3, sticky="ew", padx=(4, 0), pady=2
-        )
-        self.stack_dynamic_calculation_widgets.extend(
-            (density_method_label, density_method_widget)
-        )
         for row, label, variable in (
-            (8, "Density slices per cell", self.density_slices_var),
-            (9, "Density Q max (1/Å)", self.density_max_q0_var),
+            (7, "Density slices per cell", self.density_slices_var),
+            (8, "Density Q max (1/Å)", self.density_max_q0_var),
         ):
             label_widget = ttk.Label(stack_calculation_panel, text=label)
             label_widget.grid(row=row, column=0, sticky="w", pady=2)
@@ -2113,6 +2179,25 @@ class FitApp:
             self.stack_dynamic_calculation_widgets.extend((label_widget, entry))
         for column in (2, 3, 4, 5):
             stack_calculation_panel.columnconfigure(column, weight=1)
+
+        stack_optimization_frame = ttk.Frame(
+            stack_tabs, padding=8, style="Panel.TFrame"
+        )
+        stack_tabs.add(stack_optimization_frame, text="Optimization settings")
+        self._add_accent_strip(stack_optimization_frame, UI_COLORS["fit"])
+        for label, variable, row, column in optimization_controls:
+            ttk.Label(stack_optimization_frame, text=label).grid(
+                row=row, column=column, sticky="w"
+            )
+            ttk.Entry(stack_optimization_frame, textvariable=variable, width=10).grid(
+                row=row,
+                column=column + 1,
+                sticky="ew",
+                padx=(4, 8),
+                pady=2,
+            )
+        stack_optimization_frame.columnconfigure(1, weight=1)
+        stack_optimization_frame.columnconfigure(3, weight=1)
 
         kinematic_trace_vars = (
             self.kin_resolution_start_var,
@@ -2131,6 +2216,10 @@ class FitApp:
             self.kin_bkg_b_min_var,
             self.kin_bkg_b_max_var,
             self.kin_bkg_b_fit_var,
+            self.kin_bkg_c_start_var,
+            self.kin_bkg_c_min_var,
+            self.kin_bkg_c_max_var,
+            self.kin_bkg_c_fit_var,
         )
         for variable in kinematic_trace_vars:
             variable.trace_add("write", self._redraw_stack_model_calculation_indicators)
@@ -2195,6 +2284,7 @@ class FitApp:
             + self._collect_children(self.dynamic_substrate_frame)
         )
         self.strain_widgets = self._collect_children(self.strain_frame)
+        self._sync_workspace_panels()
         self._sync_model_controls()
         self._sync_optional_controls()
         self._redraw_range_indicators()
@@ -2299,6 +2389,8 @@ class FitApp:
         self.stack_structure_indicators.clear()
         for child in self.stack_layers_frame.winfo_children():
             child.destroy()
+        for child in self.stack_strain_frame.winfo_children():
+            child.destroy()
         self.stack_document = copy.deepcopy(document)
         self.stack_name_var.set(str(document["name"]))
         sequence = document["sequence"]
@@ -2340,6 +2432,9 @@ class FitApp:
                 return max(0.0, value - 0.5), value + 0.5
             if key == "scale":
                 return 0.9, 1.1
+            for strain_key, _label, lower, upper in STACK_STRAIN_FIELDS:
+                if key == strain_key:
+                    return lower, upper
             return 0.5, 1.5
 
         for index, (role, spec) in enumerate(
@@ -2356,8 +2451,17 @@ class FitApp:
                 "dinterface": tk.StringVar(value=str(spec.get("dinterface", 0.0))),
                 "scale": tk.StringVar(value=str(spec.get("scale", 1.0))),
                 "area_scale": tk.StringVar(value=str(spec.get("area_scale", 1.0))),
+                **{
+                    key: tk.StringVar(value=str(spec.get(key, 0.0)))
+                    for key, _label, _lower, _upper in STACK_STRAIN_FIELDS
+                },
             }
-            for key in ("dinterface", "scale", "area_scale"):
+            for key in (
+                "dinterface",
+                "scale",
+                "area_scale",
+                *(field[0] for field in STACK_STRAIN_FIELDS),
+            ):
                 value = float(variables[key].get())
                 parameter = fit_parameters.get(f"{prefix}.{key}")
                 lower, upper = (
@@ -2441,6 +2545,59 @@ class FitApp:
         self.stack_layers_frame.columnconfigure(2, weight=1)
         self.stack_layers_frame.columnconfigure(6, weight=1)
 
+        for column, label in enumerate(
+            ("Layer", "Parameter", "Fit", "Value", "Min", "Max", "Range")
+        ):
+            ttk.Label(self.stack_strain_frame, text=label).grid(
+                row=0, column=column, sticky="ew", padx=1
+            )
+        strain_row = 1
+        for role, variables in zip(self.stack_row_roles, self.stack_row_vars):
+            if role == "substrate":
+                continue
+            prefix = role if role == "capping" else variables["name"].get().strip()
+            for offset, (key, label, _lower, _upper) in enumerate(STACK_STRAIN_FIELDS):
+                row = strain_row + offset
+                if offset == 0:
+                    ttk.Label(
+                        self.stack_strain_frame,
+                        textvariable=variables["name"],
+                    ).grid(
+                        row=row, column=0, rowspan=4, sticky="nw", padx=1, pady=2
+                    )
+                ttk.Label(self.stack_strain_frame, text=label).grid(
+                    row=row, column=1, sticky="w", padx=1, pady=2
+                )
+                ttk.Checkbutton(
+                    self.stack_strain_frame,
+                    variable=variables[f"{key}_fit_enabled"],
+                ).grid(row=row, column=2, sticky="ew", padx=1, pady=2)
+                for column, variable_key in (
+                    (3, key),
+                    (4, f"{key}_min"),
+                    (5, f"{key}_max"),
+                ):
+                    ttk.Entry(
+                        self.stack_strain_frame,
+                        textvariable=variables[variable_key],
+                        width=8,
+                    ).grid(row=row, column=column, sticky="ew", padx=1, pady=2)
+                self._add_range_indicator(
+                    self.stack_strain_frame,
+                    row,
+                    f"{prefix} {label}",
+                    variables[key],
+                    variables[f"{key}_min"],
+                    variables[f"{key}_max"],
+                    variables[f"{key}_fit"],
+                    variables[f"{key}_fit_enabled"],
+                    column=6,
+                )
+                self.stack_structure_indicators.append(self.range_indicators[-1])
+            strain_row += len(STACK_STRAIN_FIELDS)
+        self.stack_strain_frame.columnconfigure(1, weight=1)
+        self.stack_strain_frame.columnconfigure(6, weight=1)
+
     def _stack_calculation_triplets(self) -> dict[str, tuple[float, float, float]]:
         model_variables = (
             (
@@ -2448,6 +2605,7 @@ class FitApp:
                 ("intensity_scale", self.dynamic_intensity_start_var, self.dynamic_intensity_min_var, self.dynamic_intensity_max_var),
                 ("background_a", self.dynamic_bkg_a_start_var, self.dynamic_bkg_a_min_var, self.dynamic_bkg_a_max_var),
                 ("background_b", self.dynamic_bkg_b_start_var, self.dynamic_bkg_b_min_var, self.dynamic_bkg_b_max_var),
+                ("background_c", self.dynamic_bkg_c_start_var, self.dynamic_bkg_c_min_var, self.dynamic_bkg_c_max_var),
             )
             if self.model_var.get() == "Dynamic"
             else (
@@ -2455,6 +2613,7 @@ class FitApp:
                 ("intensity_scale", self.kin_scale_start_var, self.kin_scale_min_var, self.kin_scale_max_var),
                 ("background_a", self.kin_bkg_a_start_var, self.kin_bkg_a_min_var, self.kin_bkg_a_max_var),
                 ("background_b", self.kin_bkg_b_start_var, self.kin_bkg_b_min_var, self.kin_bkg_b_max_var),
+                ("background_c", self.kin_bkg_c_start_var, self.kin_bkg_c_min_var, self.kin_bkg_c_max_var),
             )
         )
         return {
@@ -2494,6 +2653,8 @@ class FitApp:
             spec["dinterface"] = float(variables["dinterface"].get())
             spec["scale"] = float(variables["scale"].get())
             spec["area_scale"] = float(variables["area_scale"].get())
+            for key, _label, _lower, _upper in STACK_STRAIN_FIELDS:
+                spec[key] = float(variables[key].get())
             if spec["dinterface"] < 0 or spec["scale"] <= 0 or spec["area_scale"] <= 0:
                 raise ValueError(
                     f"{prefix} interface must be non-negative; scale and area scale must be positive"
@@ -2522,6 +2683,37 @@ class FitApp:
                 fit_parameters.append(
                     {"target": f"{prefix}.{key}", "min": values[1], "max": values[2]}
                 )
+            if role != "substrate":
+                for key, label, _lower, _upper in STACK_STRAIN_FIELDS:
+                    value = float(spec[key])
+                    minimum = float(variables[f"{key}_min"].get())
+                    maximum = float(variables[f"{key}_max"].get())
+                    if key.endswith("_end") and value < 0:
+                        raise ValueError(f"{prefix} {label.lower()} must be non-negative")
+                    if not variables[f"{key}_fit_enabled"].get():
+                        continue
+                    validate_start_min_max(
+                        f"{prefix} {label.lower()}",
+                        value,
+                        minimum,
+                        maximum,
+                        allow_outside_start=allow_outside_start,
+                    )
+                    if minimum >= maximum:
+                        raise ValueError(f"{prefix} {label.lower()}: min must be less than max")
+                    if key.endswith("_end") and minimum < 0:
+                        raise ValueError(
+                            f"{prefix} {label.lower()} minimum must be non-negative"
+                        )
+                    if allow_outside_start:
+                        spec[key] = float(np.clip(value, minimum, maximum))
+                    fit_parameters.append(
+                        {
+                            "target": f"{prefix}.{key}",
+                            "min": minimum,
+                            "max": maximum,
+                        }
+                    )
             if role == "substrate":
                 substrate_spec = spec
             elif role == "capping":
@@ -2542,6 +2734,7 @@ class FitApp:
                 intensity_scale=float(self.dynamic_intensity_start_var.get()),
                 background_a=float(self.dynamic_bkg_a_start_var.get()),
                 background_b=float(self.dynamic_bkg_b_start_var.get()),
+                background_c=float(self.dynamic_bkg_c_start_var.get()),
             )
         else:
             calculation.update(
@@ -2549,10 +2742,9 @@ class FitApp:
                 intensity_scale=float(self.kin_scale_start_var.get()),
                 background_a=float(self.kin_bkg_a_start_var.get()),
                 background_b=float(self.kin_bkg_b_start_var.get()),
+                background_c=float(self.kin_bkg_c_start_var.get()),
             )
         calculation.update(
-            dynamic_backend=self.dynamic_backend_var.get().strip().lower(),
-            density_method=self.density_method_var.get().strip().lower(),
             density_slices=int(self.density_slices_var.get()),
             density_max_q0=float(self.density_max_q0_var.get()),
         )
@@ -2619,6 +2811,7 @@ class FitApp:
                 self.dynamic_intensity_start_var,
                 self.dynamic_bkg_a_start_var,
                 self.dynamic_bkg_b_start_var,
+                self.dynamic_bkg_c_start_var,
             )
             if model == "Dynamic"
             else (
@@ -2626,16 +2819,24 @@ class FitApp:
                 self.kin_scale_start_var,
                 self.kin_bkg_a_start_var,
                 self.kin_bkg_b_start_var,
+                self.kin_bkg_c_start_var,
             )
         )
         for variable, key in zip(
-            targets, ("resolution", "intensity_scale", "background_a", "background_b")
+            targets,
+            (
+                "resolution",
+                "intensity_scale",
+                "background_a",
+                "background_b",
+                "background_c",
+            ),
         ):
             if key in calculation:
                 variable.set(str(calculation[key]))
+        if "background_c" not in calculation:
+            targets[4].set("0.0")
         for variable, key in (
-            (self.dynamic_backend_var, "dynamic_backend"),
-            (self.density_method_var, "density_method"),
             (self.density_slices_var, "density_slices"),
             (self.density_max_q0_var, "density_max_q0"),
         ):
@@ -2651,6 +2852,7 @@ class FitApp:
                 "intensity_scale": (self.dynamic_intensity_min_var, self.dynamic_intensity_max_var),
                 "background_a": (self.dynamic_bkg_a_min_var, self.dynamic_bkg_a_max_var),
                 "background_b": (self.dynamic_bkg_b_min_var, self.dynamic_bkg_b_max_var),
+                "background_c": (self.dynamic_bkg_c_min_var, self.dynamic_bkg_c_max_var),
             }
             if model == "Dynamic"
             else {
@@ -2658,6 +2860,7 @@ class FitApp:
                 "intensity_scale": (self.kin_scale_min_var, self.kin_scale_max_var),
                 "background_a": (self.kin_bkg_a_min_var, self.kin_bkg_a_max_var),
                 "background_b": (self.kin_bkg_b_min_var, self.kin_bkg_b_max_var),
+                "background_c": (self.kin_bkg_c_min_var, self.kin_bkg_c_max_var),
             }
         )
         range_variables = model_range_variables
@@ -2666,6 +2869,7 @@ class FitApp:
             "intensity_scale": targets[1],
             "background_a": targets[2],
             "background_b": targets[3],
+            "background_c": targets[4],
         }
         for name, variables in range_variables.items():
             parameter = fit_parameters.get(f"calculation.{name}")
@@ -2818,6 +3022,9 @@ class FitApp:
 
     def _on_stack_enabled_changed(self, *_args: object) -> None:
         self._clear_fit_result_values()
+        self._sync_workspace_panels()
+        self._sync_model_controls()
+        self._sync_optional_controls()
         state = tk.DISABLED if self.stack_enabled_var.get() else tk.NORMAL
         self.strain_checkbutton.configure(state=state)
         self.roughness_checkbutton.configure(state=state)
@@ -2825,9 +3032,9 @@ class FitApp:
             state=tk.DISABLED if self.running else tk.NORMAL
         )
         self.status_var.set(
-            "Superlattice simulation and fitting enabled"
+            "Superlattice workspace selected"
             if self.stack_enabled_var.get()
-            else "Ready"
+            else "Film workspace selected"
         )
         if self.stack_enabled_var.get():
             if self.superlattice_data_preview:
@@ -2837,12 +3044,21 @@ class FitApp:
         else:
             self._schedule_data_preview()
 
+    def _sync_workspace_panels(self) -> None:
+        if self.stack_enabled_var.get():
+            self.film_container.grid_remove()
+            self.stack_container.grid()
+        else:
+            self.stack_container.grid_remove()
+            self.film_container.grid()
+
     def _sync_model_controls(self) -> None:
         is_dynamic = self.model_var.get() == "Dynamic"
         self._set_widgets_enabled(self.dynamic_widgets, is_dynamic)
         self._set_widgets_enabled(self.kinematic_widgets, not is_dynamic)
         self._sync_stack_calculation_controls(is_dynamic)
         self._sync_kinematic_substrate_controls()
+        self._sync_optional_controls()
 
     def _sync_stack_calculation_controls(self, is_dynamic: bool) -> None:
         variable_rows = (
@@ -2851,6 +3067,7 @@ class FitApp:
                 (self.dynamic_intensity_start_var, self.dynamic_intensity_min_var, self.dynamic_intensity_max_var),
                 (self.dynamic_bkg_a_start_var, self.dynamic_bkg_a_min_var, self.dynamic_bkg_a_max_var),
                 (self.dynamic_bkg_b_start_var, self.dynamic_bkg_b_min_var, self.dynamic_bkg_b_max_var),
+                (self.dynamic_bkg_c_start_var, self.dynamic_bkg_c_min_var, self.dynamic_bkg_c_max_var),
             )
             if is_dynamic
             else (
@@ -2858,6 +3075,7 @@ class FitApp:
                 (self.kin_scale_start_var, self.kin_scale_min_var, self.kin_scale_max_var),
                 (self.kin_bkg_a_start_var, self.kin_bkg_a_min_var, self.kin_bkg_a_max_var),
                 (self.kin_bkg_b_start_var, self.kin_bkg_b_min_var, self.kin_bkg_b_max_var),
+                (self.kin_bkg_c_start_var, self.kin_bkg_c_min_var, self.kin_bkg_c_max_var),
             )
         )
         for value_entry, min_entry, max_entry, indicator, variables in zip(
@@ -2882,11 +3100,18 @@ class FitApp:
             self._draw_range_indicator(indicator)
 
     def _sync_kinematic_substrate_controls(self) -> None:
-        enabled = self.model_var.get() == "Kinematic" and bool(self.kin_substrate_var.get())
+        enabled = (
+            not self.stack_enabled_var.get()
+            and self.model_var.get() == "Kinematic"
+            and bool(self.kin_substrate_var.get())
+        )
         self._set_widgets_enabled(self.kinematic_substrate_widgets, enabled)
 
     def _sync_optional_controls(self) -> None:
-        self._set_widgets_enabled(self.strain_widgets, bool(self.strain_var.get()))
+        self._set_widgets_enabled(
+            self.strain_widgets,
+            not self.stack_enabled_var.get() and bool(self.strain_var.get()),
+        )
 
     def _store_strain_values(self) -> None:
         self.strain_values_by_model[self.active_strain_model] = list(
@@ -3066,6 +3291,8 @@ class FitApp:
 
         def set_flags(variables: tuple[tk.BooleanVar, ...], values: object) -> None:
             values_list = list(values)
+            if len(values_list) == len(variables) - 1:
+                values_list.append(False)
             if len(values_list) != len(variables):
                 raise ValueError("Saved fit-selection list has the wrong length")
             for variable, value in zip(variables, values_list):
@@ -3087,8 +3314,6 @@ class FitApp:
             self.model_var.set(model_name)
             self.data_path_var.set(str(setup["data_path"]))
             self.wavelength_var.set(str(setup["wavelength"]))
-            self.dynamic_backend_var.set(str(setup["dynamic_backend"]))
-            self.density_method_var.set(str(setup.get("density_method", "sampled")))
             self.density_slices_var.set(str(setup.get("density_slices", 50)))
             self.density_max_q0_var.set(str(setup.get("density_max_q0", 30.0)))
             self.seed_var.set(str(setup["seed"]))
@@ -3119,6 +3344,14 @@ class FitApp:
                 ("bkg_b", (self.kin_bkg_b_start_var, self.kin_bkg_b_min_var, self.kin_bkg_b_max_var)),
             ):
                 set_triplet(variables, kinematic[key])
+            set_triplet(
+                (
+                    self.kin_bkg_c_start_var,
+                    self.kin_bkg_c_min_var,
+                    self.kin_bkg_c_max_var,
+                ),
+                kinematic.get("bkg_c", (0.0, -3.0, 3.0)),
+            )
             self.kin_debye_var.set(str(kinematic["debye_waller_coeff"]))
             set_flags(
                 (
@@ -3128,6 +3361,7 @@ class FitApp:
                     self.kin_scale_fit_enabled_var,
                     self.kin_bkg_a_fit_enabled_var,
                     self.kin_bkg_b_fit_enabled_var,
+                    self.kin_bkg_c_fit_enabled_var,
                 ),
                 setup["kinematic_fit_flags"],
             )
@@ -3197,12 +3431,21 @@ class FitApp:
                 ("bkg_b", (self.dynamic_bkg_b_start_var, self.dynamic_bkg_b_min_var, self.dynamic_bkg_b_max_var)),
             ):
                 set_triplet(variables, dynamic[key])
+            set_triplet(
+                (
+                    self.dynamic_bkg_c_start_var,
+                    self.dynamic_bkg_c_min_var,
+                    self.dynamic_bkg_c_max_var,
+                ),
+                dynamic.get("bkg_c", (0.0, -0.1, 0.1)),
+            )
             set_flags(
                 (
                     self.dynamic_resolution_fit_enabled_var,
                     self.dynamic_intensity_fit_enabled_var,
                     self.dynamic_bkg_a_fit_enabled_var,
                     self.dynamic_bkg_b_fit_enabled_var,
+                    self.dynamic_bkg_c_fit_enabled_var,
                 ),
                 setup["dynamic_fit_flags"],
             )
@@ -3414,11 +3657,14 @@ class FitApp:
         self.kin_scale_min_var.set("0.001")
         self.kin_scale_max_var.set("0.05")
         self.kin_bkg_a_start_var.set("0.0")
-        self.kin_bkg_a_min_var.set("0.0")
-        self.kin_bkg_a_max_var.set("1.0")
+        self.kin_bkg_a_min_var.set("-3.0")
+        self.kin_bkg_a_max_var.set("3.0")
         self.kin_bkg_b_start_var.set("0.1")
         self.kin_bkg_b_min_var.set("0.0")
         self.kin_bkg_b_max_var.set("3.0")
+        self.kin_bkg_c_start_var.set("0.0")
+        self.kin_bkg_c_min_var.set("-3.0")
+        self.kin_bkg_c_max_var.set("3.0")
         self.kin_debye_var.set(f"{sample.debye_waller_coeff:.6g}")
         self.kin_substrate_d_start_var.set(f"{d0:.6g}")
         self.kin_substrate_d_min_var.set(f"{d0 * 0.995:.6g}")
@@ -3588,6 +3834,7 @@ class FitApp:
             self.kin_scale_fit_var,
             self.kin_bkg_a_fit_var,
             self.kin_bkg_b_fit_var,
+            self.kin_bkg_c_fit_var,
             self.kin_debye_fit_var,
             self.kin_substrate_intensity_fit_var,
             self.kin_substrate_width_fit_var,
@@ -3600,6 +3847,7 @@ class FitApp:
             self.dynamic_intensity_fit_var,
             self.dynamic_bkg_a_fit_var,
             self.dynamic_bkg_b_fit_var,
+            self.dynamic_bkg_c_fit_var,
             self.substrate_scale_fit_var,
             *self.strain_fit_vars,
             self.film_rough_fit_var,
@@ -3607,7 +3855,12 @@ class FitApp:
         ):
             variable.set("")
         for variables in self.stack_row_vars:
-            for key in ("dinterface", "scale", "area_scale"):
+            for key in (
+                "dinterface",
+                "scale",
+                "area_scale",
+                *(field[0] for field in STACK_STRAIN_FIELDS),
+            ):
                 variables[f"{key}_fit"].set("")
         for variable in self.stack_calculation_fit_vars.values():
             variable.set("")
@@ -3626,7 +3879,10 @@ class FitApp:
                     if role in {"substrate", "capping"}
                     else variables["name"].get().strip()
                 )
-                for key in ("dinterface", "scale", "area_scale"):
+                keys = ["dinterface", "scale", "area_scale"]
+                if role != "substrate":
+                    keys.extend(field[0] for field in STACK_STRAIN_FIELDS)
+                for key in keys:
                     target = f"{prefix}.{key}"
                     if target in values:
                         result = self._format_fit_result(values[target])
@@ -3645,6 +3901,7 @@ class FitApp:
                     "intensity_scale": self.dynamic_intensity_start_var,
                     "background_a": self.dynamic_bkg_a_start_var,
                     "background_b": self.dynamic_bkg_b_start_var,
+                    "background_c": self.dynamic_bkg_c_start_var,
                 }
                 if config["model"] == "Dynamic"
                 else {
@@ -3652,6 +3909,7 @@ class FitApp:
                     "intensity_scale": self.kin_scale_start_var,
                     "background_a": self.kin_bkg_a_start_var,
                     "background_b": self.kin_bkg_b_start_var,
+                    "background_c": self.kin_bkg_c_start_var,
                 }
             )
             for key, variable in calculation_start_vars.items():
@@ -3670,14 +3928,16 @@ class FitApp:
             self.kin_scale_start_var.set(self._format_fit_result(float(params[3])))
             self.kin_bkg_a_start_var.set(self._format_fit_result(float(params[4])))
             self.kin_bkg_b_start_var.set(self._format_fit_result(float(params[5])))
+            self.kin_bkg_c_start_var.set(self._format_fit_result(float(params[6])))
             self.kin_d_fit_var.set(self.kin_d_start_var.get())
             self.kin_planes_fit_var.set(self.kin_planes_start_var.get())
             self.kin_resolution_fit_var.set(self.kin_resolution_start_var.get())
             self.kin_scale_fit_var.set(self.kin_scale_start_var.get())
             self.kin_bkg_a_fit_var.set(self.kin_bkg_a_start_var.get())
             self.kin_bkg_b_fit_var.set(self.kin_bkg_b_start_var.get())
+            self.kin_bkg_c_fit_var.set(self.kin_bkg_c_start_var.get())
             self.kin_debye_fit_var.set(self.kin_debye_var.get())
-            offset = 6
+            offset = 7
             if bool(config["include_kinematic_substrate"]):
                 self.kin_substrate_intensity_start_var.set(
                     self._format_fit_result(float(params[offset]))
@@ -3709,6 +3969,7 @@ class FitApp:
             self.dynamic_intensity_start_var.set(self._format_fit_result(float(params[5])))
             self.dynamic_bkg_a_start_var.set(self._format_fit_result(float(params[6])))
             self.dynamic_bkg_b_start_var.set(self._format_fit_result(float(params[7])))
+            self.dynamic_bkg_c_start_var.set(self._format_fit_result(float(params[8])))
             self.film_n_fit_var.set(self.film_n_start_var.get())
             self.film_scale_fit_var.set(self.film_scale_start_var.get())
             self.film_area_fit_var.set(self.film_area_start_var.get())
@@ -3717,9 +3978,10 @@ class FitApp:
             self.dynamic_intensity_fit_var.set(self.dynamic_intensity_start_var.get())
             self.dynamic_bkg_a_fit_var.set(self.dynamic_bkg_a_start_var.get())
             self.dynamic_bkg_b_fit_var.set(self.dynamic_bkg_b_start_var.get())
-            self.substrate_scale_var.set(self._format_fit_result(float(params[8])))
+            self.dynamic_bkg_c_fit_var.set(self.dynamic_bkg_c_start_var.get())
+            self.substrate_scale_var.set(self._format_fit_result(float(params[9])))
             self.substrate_scale_fit_var.set(self.substrate_scale_var.get())
-            offset = 9
+            offset = 10
 
         if bool(config["include_strain"]):
             for index, (start_var, fit_var) in enumerate(
@@ -3771,13 +4033,14 @@ class FitApp:
                 ("scale", params[3], settings["scale"]),
                 ("bkg a", params[4], settings["bkg_a"]),
                 ("bkg b", params[5], settings["bkg_b"]),
+                ("bkg c", params[6], settings["bkg_c"]),
             )
             rows.extend(
                 (name, float(value), float(bounds[1]), float(bounds[2]))
                 for (name, value, bounds), enabled in zip(base, config["kinematic_fit_flags"])
                 if enabled
             )
-            offset = 6
+            offset = 7
             if bool(config["include_kinematic_substrate"]):
                 settings = config["kinematic_substrate_settings"]
                 substrate_rows = (
@@ -3812,6 +4075,7 @@ class FitApp:
                 ("dynamic intensity scale", params[5], settings["intensity_scale"]),
                 ("dynamic bkg a", params[6], settings["bkg_a"]),
                 ("dynamic bkg b", params[7], settings["bkg_b"]),
+                ("dynamic bkg c", params[8], settings["bkg_c"]),
             )
             rows.extend(
                 (name, float(value), float(bounds[1]), float(bounds[2]))
@@ -3823,12 +4087,12 @@ class FitApp:
                 rows.append(
                     (
                         "substrate lattice scale",
-                        float(params[8]),
+                        float(params[9]),
                         float(bounds[1]),
                         float(bounds[2]),
                     )
                 )
-            offset = 9
+            offset = 10
 
         if bool(config["include_strain"]):
             settings = config["strain_settings"]
@@ -3892,6 +4156,7 @@ class FitApp:
             bool(self.kin_scale_fit_enabled_var.get()),
             bool(self.kin_bkg_a_fit_enabled_var.get()),
             bool(self.kin_bkg_b_fit_enabled_var.get()),
+            bool(self.kin_bkg_c_fit_enabled_var.get()),
         )
         kinematic_substrate_fit_flags = (
             bool(self.kin_substrate_intensity_fit_enabled_var.get()),
@@ -3909,6 +4174,7 @@ class FitApp:
             bool(self.dynamic_intensity_fit_enabled_var.get()),
             bool(self.dynamic_bkg_a_fit_enabled_var.get()),
             bool(self.dynamic_bkg_b_fit_enabled_var.get()),
+            bool(self.dynamic_bkg_c_fit_enabled_var.get()),
         )
         strain_fit_flags = tuple(
             bool(variable.get()) for variable in self.strain_fit_enabled_vars
@@ -3949,6 +4215,11 @@ class FitApp:
             float(self.kin_bkg_b_min_var.get()),
             float(self.kin_bkg_b_max_var.get()),
         )
+        kinematic_bkg_c = (
+            float(self.kin_bkg_c_start_var.get()),
+            float(self.kin_bkg_c_min_var.get()),
+            float(self.kin_bkg_c_max_var.get()),
+        )
         kinematic_debye = float(self.kin_debye_var.get())
         kinematic_substrate_intensity = (
             float(self.kin_substrate_intensity_start_var.get()),
@@ -3974,6 +4245,7 @@ class FitApp:
                 "kinematic scale",
                 "kinematic bkg a",
                 "kinematic bkg b",
+                "kinematic bkg c",
             ),
             (
                 kinematic_d,
@@ -3982,6 +4254,7 @@ class FitApp:
                 kinematic_scale,
                 kinematic_bkg_a,
                 kinematic_bkg_b,
+                kinematic_bkg_c,
             ),
         ):
             if enabled:
@@ -4099,6 +4372,11 @@ class FitApp:
             float(self.dynamic_bkg_b_min_var.get()),
             float(self.dynamic_bkg_b_max_var.get()),
         )
+        dynamic_bkg_c = (
+            float(self.dynamic_bkg_c_start_var.get()),
+            float(self.dynamic_bkg_c_min_var.get()),
+            float(self.dynamic_bkg_c_max_var.get()),
+        )
         for enabled, name, values in zip(
             dynamic_fit_flags,
             (
@@ -4106,12 +4384,14 @@ class FitApp:
                 "dynamic intensity scale",
                 "dynamic bkg a",
                 "dynamic bkg b",
+                "dynamic bkg c",
             ),
             (
                 dynamic_resolution,
                 dynamic_intensity_scale,
                 dynamic_bkg_a,
                 dynamic_bkg_b,
+                dynamic_bkg_c,
             ),
         ):
             if enabled:
@@ -4194,12 +4474,6 @@ class FitApp:
                 allow_outside_start=allow_outside_start,
             )
         twotheta_min, twotheta_max = self._window_twotheta_limits()
-        dynamic_backend = self.dynamic_backend_var.get().strip().lower()
-        if dynamic_backend not in {"auto", "reflection", "fused", "legacy"}:
-            raise ValueError("dynamic backend must be auto, reflection, fused, or legacy")
-        density_method = self.density_method_var.get().strip().lower()
-        if density_method not in {"sampled", "analytic"}:
-            raise ValueError("density method must be sampled or analytic")
         density_slices = int(self.density_slices_var.get())
         density_max_q0 = float(self.density_max_q0_var.get())
         sampling_scale = (
@@ -4231,8 +4505,6 @@ class FitApp:
             "data_path": str(data_path),
             "model": self.model_var.get(),
             "wavelength": wavelength,
-            "dynamic_backend": dynamic_backend,
-            "density_method": density_method,
             "density_slices": density_slices,
             "density_max_q0": density_max_q0,
             "twotheta_min": twotheta_min,
@@ -4260,6 +4532,7 @@ class FitApp:
                 "scale": kinematic_scale,
                 "bkg_a": kinematic_bkg_a,
                 "bkg_b": kinematic_bkg_b,
+                "bkg_c": kinematic_bkg_c,
                 "debye_waller_coeff": kinematic_debye,
             },
             "kinematic_substrate_settings": {
@@ -4280,6 +4553,7 @@ class FitApp:
                 "intensity_scale": dynamic_intensity_scale,
                 "bkg_a": dynamic_bkg_a,
                 "bkg_b": dynamic_bkg_b,
+                "bkg_c": dynamic_bkg_c,
             },
             "substrate_settings": {
                 "filename": substrate_filename,
@@ -4363,8 +4637,7 @@ class FitApp:
                 substrate_scale=float(substrate_settings["scale"][0]),
                 substrate_area_scale=float(substrate_settings["area_scale"]),
                 wavelength=float(config["wavelength"]),
-                propagation_backend=str(config["dynamic_backend"]),
-                density_method=str(config["density_method"]),
+                propagation_backend="reflection",
                 density_slices=int(config["density_slices"]),
                 density_max_q0=float(config["density_max_q0"]),
             )
@@ -4563,8 +4836,6 @@ class FitApp:
                 substrate_settings if config["model"] == "Dynamic" else None,
             )
             backend_text = (
-                f"Dynamic backend: {config['dynamic_backend']}\n"
-                f"Density method: {config['density_method']}\n"
                 f"Density sampling: {config['density_slices']} slices/cell, "
                 f"Q max {float(config['density_max_q0']):.6g} 1/A\n"
                 if config["model"] == "Dynamic"
@@ -4991,8 +5262,6 @@ class FitApp:
                     substrate_settings if config["model"] == "Dynamic" else None,
                 )
                 backend_text = (
-                    f"Dynamic backend: {config['dynamic_backend']}\n"
-                    f"Density method: {config['density_method']}\n"
                     f"Density sampling: {config['density_slices']} slices/cell, "
                     f"Q max {float(config['density_max_q0']):.6g} 1/A\n"
                     if config["model"] == "Dynamic"

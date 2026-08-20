@@ -26,6 +26,7 @@ from genl import (
     read_poscar,
     validate_density_sampling,
 )
+from genl.background import centered_polynomial_background
 from genl.gui import (
     FitUpdate,
     KinematicModel,
@@ -56,6 +57,17 @@ FE_DATA = EXAMPLE_DATA_DIR / "Example_data_10nmFe.txt"
 
 
 class CoreTests(unittest.TestCase):
+    def test_centered_polynomial_background_uses_normalized_q(self):
+        q = np.array([2.0, 3.0, 4.0])
+        np.testing.assert_allclose(
+            centered_polynomial_background(q, 2.0, 5.0, 3.0),
+            [6.0, 5.0, 10.0],
+        )
+        np.testing.assert_allclose(
+            centered_polynomial_background(np.array([3.0]), 2.0, 5.0, 3.0),
+            [5.0],
+        )
+
     def test_stack_simulation_grid_uses_selected_axis_density(self):
         twotheta, q = stack_simulation_grid(60.0, 62.0, 10.0, False, 1.5406)
         self.assertEqual(len(twotheta), 21)
@@ -70,26 +82,39 @@ class CoreTests(unittest.TestCase):
             validate_density_sampling(4.0, 20, 20.0)
 
     def test_dynamic_form_factors_include_matlab_debye_waller_factor(self):
-        q0 = np.array([0.0, 4.0])
         prepared = dynamic._prepare_layer(
             Layer(direction=1, n=1, filename="Fe_fractional.vasp"),
             1.54056,
-            q0,
             POSCAR,
             DATA,
+            density_qpass=8.2,
+            density_qstop=30.0,
         )
-        raw, _, _ = form_factors(
-            q0,
-            read_form_factor_coefficients(26, 1.54056, DATA),
-            1.0,
+        coefficients = read_form_factor_coefficients(26, 1.54056, DATA)
+        expected = dynamic._build_atomic_density_kernel(
+            coefficients.a[0],
+            coefficients.b[0],
+            float(coefficients.c[0]),
+            float(coefficients.f_1[0]),
+            float(coefficients.f_2[0]),
+            0.35,
+            8.2,
+            30.0,
+            1e-10,
+            0.01,
         )
-        expected = raw * np.exp(-0.35 * (q0 / (4.0 * np.pi)) ** 2)
-
-        for atom_form_factor in np.asarray(prepared["ff"]).T:
-            np.testing.assert_allclose(atom_form_factor, expected)
+        for kernel in prepared["kernels"]:
+            self.assertEqual(kernel.dx, expected.dx)
+            self.assertEqual(kernel.support, expected.support)
+            np.testing.assert_allclose(kernel.primitive, expected.primitive)
 
     def test_fe_v_stack_expands_and_simulates(self):
-        definition = StackDefinition.load(STACK_DIR / "fe_v_4_28_x11.json")
+        base = StackDefinition.load(STACK_DIR / "fe_v_4_28_x11.json")
+        document = copy.deepcopy(base.document)
+        document["fit_parameters"] = []
+        for key in ("background_a", "background_b", "background_c"):
+            document["calculation"][key] = 0.0
+        definition = StackDefinition(base.path, document)
         layers = definition.layers()
 
         sequence = definition.document["sequence"]
@@ -98,7 +123,11 @@ class CoreTests(unittest.TestCase):
             len(layers),
             1 + int(sequence["repetitions"]) * len(sequence["layers"]) + cap_count,
         )
-        self.assertEqual([layers[1].n, layers[2].n], [13, 2])
+        expected_cells = [
+            float(layer["unit_cells"])
+            for layer in definition.document["sequence"]["layers"]
+        ]
+        self.assertEqual([layers[1].n, layers[2].n], expected_cells)
         self.assertEqual(
             [Path(layer.filename).stem for layer in layers[1:5]],
             ["V_fractional", "Fe_fractional", "V_fractional", "Fe_fractional"],
@@ -173,6 +202,30 @@ class CoreTests(unittest.TestCase):
             definition.resolved_document(np.array([1.02]))["layers"][-1]["name"],
             "Fe cap",
         )
+
+    def test_superlattice_strain_targets_apply_to_each_repeat_and_capping_layer(self):
+        base = StackDefinition.load(STACK_DIR / "fe_v_4_28_x11.json")
+        document = copy.deepcopy(base.document)
+        document["sequence"]["repetitions"] = 2
+        next(
+            layer for layer in document["sequence"]["layers"] if layer["name"] == "V"
+        )["bottom_strain_amplitude"] = 0.0
+        document["capping_layer"]["top_strain_end"] = 0.0
+        document["fit_parameters"] = [
+            {
+                "target": "V.bottom_strain_amplitude",
+                "min": -0.1,
+                "max": 0.1,
+            },
+            {"target": "capping.top_strain_end", "min": 0.0, "max": 10.0},
+        ]
+        definition = StackDefinition(base.path, document)
+
+        layers = definition.layers(np.array([0.025, 4.0]))
+
+        self.assertAlmostEqual(layers[1].bottom_strain_amplitude, 0.025)
+        self.assertAlmostEqual(layers[3].bottom_strain_amplitude, 0.025)
+        self.assertAlmostEqual(layers[-1].top_strain_end, 4.0)
 
     def test_kinematic_multilayer_does_not_repeat_interface_phase(self):
         q = np.array([1.0])
@@ -267,7 +320,6 @@ class CoreTests(unittest.TestCase):
             "data_path": FE_DATA,
             "model": "Dynamic",
             "wavelength": 1.5406,
-            "dynamic_backend": "auto",
             "density_slices": 100,
             "density_max_q0": 30.0,
             "twotheta_min": 58.92,
@@ -394,7 +446,6 @@ class CoreTests(unittest.TestCase):
             form_factor_dir=DATA,
             slices=20,
             max_q0=14,
-            step_q0=0.2,
         )
 
         self.assertEqual(result.refl.shape, q.shape)
@@ -427,8 +478,7 @@ class CoreTests(unittest.TestCase):
             "poscar_dir": POSCAR,
             "form_factor_dir": DATA,
             "slices": 12,
-            "max_q0": 8,
-            "step_q0": 0.5,
+            "max_q0": 8.5,
         }
 
         fused = calc_dynamic_density(q, wavelength, stack, propagation_backend="fused", **kwargs)
@@ -462,7 +512,6 @@ class CoreTests(unittest.TestCase):
             "form_factor_dir": DATA,
             "slices": 50,
             "max_q0": 30.0,
-            "density_method": "analytic",
         }
         workspace = DynamicWorkspace()
         reflection = calc_dynamic_density(
@@ -521,7 +570,6 @@ class CoreTests(unittest.TestCase):
             vacuum_thick=20,
             slices=400,
             max_q0=75,
-            step_q0=0.01,
             propagation_backend="reflection",
         )
 
@@ -546,8 +594,7 @@ class CoreTests(unittest.TestCase):
             "poscar_dir": POSCAR,
             "form_factor_dir": DATA,
             "slices": 16,
-            "max_q0": 8,
-            "step_q0": 1.0,
+            "max_q0": 8.5,
         }
         q = np.linspace(3.5, 6.0, 5)
 
@@ -571,7 +618,7 @@ class CoreTests(unittest.TestCase):
                 )
                 np.testing.assert_allclose(reflection.refl, fused.refl, rtol=1e-10, atol=1e-13)
 
-    def test_reflection_backend_reuses_substrate_reflection(self):
+    def test_default_reflection_backend_reuses_substrate_reflection(self):
         if dynamic._prepare_substrate_reflection_pair_numba is None:
             self.skipTest("numba reflection backend is unavailable")
         q = np.linspace(4.0, 4.8, 8)
@@ -582,9 +629,7 @@ class CoreTests(unittest.TestCase):
             "poscar_dir": POSCAR,
             "form_factor_dir": DATA,
             "slices": 12,
-            "max_q0": 8,
-            "step_q0": 0.5,
-            "propagation_backend": "reflection",
+            "max_q0": 8.5,
             "workspace": workspace,
         }
         stack = [
@@ -610,8 +655,7 @@ class CoreTests(unittest.TestCase):
             "poscar_dir": POSCAR,
             "form_factor_dir": DATA,
             "slices": 12,
-            "max_q0": 8,
-            "step_q0": 0.5,
+            "max_q0": 8.5,
             "propagation_backend": "fused",
             "workspace": workspace,
         }
@@ -655,9 +699,9 @@ class CoreTests(unittest.TestCase):
             include_roughness=True,
         )
         params = np.array(
-            [28.5, 1.04, 1.19, 1.4, 0.005, 5000.0, 0.0, 0.0, 1.0, 0.5, 0.0]
+            [28.5, 1.04, 1.19, 1.4, 0.005, 5000.0, 0.0, 0.0, 0.0, 1.0, 0.5, 0.0]
         )
-        n_values, weights = roughness_distribution(params[0], params[9])
+        n_values, weights = roughness_distribution(params[0], params[10])
         self.assertEqual(n_values.tolist(), [28, 29, 30, 31])
 
         results = [
@@ -728,6 +772,7 @@ class CoreTests(unittest.TestCase):
                 5000.0,
                 0.0,
                 0.0,
+                0.0,
                 1.0,
                 0.02,
                 3.0,
@@ -773,12 +818,12 @@ class CoreTests(unittest.TestCase):
             substrate_settings=substrate,
         )
 
-        np.testing.assert_allclose(kin_start[6:10], expected_start)
-        np.testing.assert_allclose(kin_bounds[6:10], expected_bounds)
-        self.assertEqual(dyn_start[8], 1.002)
-        np.testing.assert_allclose(dyn_bounds[8], [0.997, 1.007])
-        np.testing.assert_allclose(dyn_start[9:13], expected_start)
-        np.testing.assert_allclose(dyn_bounds[9:13], expected_bounds)
+        np.testing.assert_allclose(kin_start[7:11], expected_start)
+        np.testing.assert_allclose(kin_bounds[7:11], expected_bounds)
+        self.assertEqual(dyn_start[9], 1.002)
+        np.testing.assert_allclose(dyn_bounds[9], [0.997, 1.007])
+        np.testing.assert_allclose(dyn_start[10:14], expected_start)
+        np.testing.assert_allclose(dyn_bounds[10:14], expected_bounds)
 
     def test_kinematic_substrate_peak_is_in_parameter_vector_and_prediction(self):
         sample = SAMPLES["Fe 10 nm"]
@@ -801,11 +846,11 @@ class CoreTests(unittest.TestCase):
         with_substrate = KinematicModel(
             twotheta, observed, sample, include_substrate=True
         ).predict(start)
-        film_only = KinematicModel(twotheta, observed, sample).predict(start[:6])
+        film_only = KinematicModel(twotheta, observed, sample).predict(start[:7])
 
-        np.testing.assert_allclose(start[6:9], [25.0, 0.08, d_spacing])
+        np.testing.assert_allclose(start[7:10], [25.0, 0.08, d_spacing])
         np.testing.assert_allclose(
-            bounds[6:9],
+            bounds[7:10],
             [[0.0, 100.0], [0.01, 0.2], [d_spacing * 0.999, d_spacing * 1.001]],
         )
         np.testing.assert_allclose(

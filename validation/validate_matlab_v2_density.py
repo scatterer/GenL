@@ -89,7 +89,6 @@ def compare_case(name: str, twotheta: np.ndarray, stack: list[Layer]) -> bool:
         max_q0=30,
         propagation_backend="reflection",
         workspace=DynamicWorkspace(),
-        density_method="analytic",
     )
 
     reference_refl = reference[:, 2]

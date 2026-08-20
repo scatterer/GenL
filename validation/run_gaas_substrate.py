@@ -28,7 +28,6 @@ def run_gaas_substrate(
     theta_step: float = 0.01,
     slices: int = 400,
     max_q0: float = 75.0,
-    step_q0: float = 0.01,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
     wavelength = 1.54056
     theta = np.arange(0.0, 90.0 + theta_step * 0.5, theta_step)
@@ -56,7 +55,6 @@ def run_gaas_substrate(
         vacuum_thick=20.0,
         slices=slices,
         max_q0=max_q0,
-        step_q0=step_q0,
     )
     reflectivity = {
         "sigma": calc_dynamic_density(control=Control(pol=0, model="density"), **common).refl,
@@ -76,7 +74,6 @@ def main() -> int:
     parser.add_argument("--theta-step", type=float, default=0.01)
     parser.add_argument("--slices", type=int, default=400)
     parser.add_argument("--max-q0", type=float, default=75.0)
-    parser.add_argument("--step-q0", type=float, default=0.01)
     parser.add_argument("--no-plot", action="store_true")
     args = parser.parse_args()
 
@@ -84,7 +81,6 @@ def main() -> int:
         theta_step=args.theta_step,
         slices=args.slices,
         max_q0=args.max_q0,
-        step_q0=args.step_q0,
     )
 
     output_csv = ROOT / "validation" / "gaas_substrate_dynamic.csv"

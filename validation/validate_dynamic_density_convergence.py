@@ -37,7 +37,6 @@ def main() -> int:
         "poscar_dir": STRUCTURE_DIR,
         "form_factor_dir": FORM_FACTOR_DIR,
         "max_q0": 30.0,
-        "density_method": "analytic",
         "propagation_backend": "reflection",
         "workspace": DynamicWorkspace(),
     }

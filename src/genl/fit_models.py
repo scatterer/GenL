@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from . import Control, DynamicResult, DynamicWorkspace, Instrument, Layer, calc_dynamic_density
+from .background import centered_polynomial_background
 from .convolution import gauss_conv
 from .kinematic import matlab_round
 from .paths import FORM_FACTOR_DIR, STRUCTURE_DIR
@@ -28,8 +29,7 @@ class DynamicModel:
         substrate_scale: float = 1.0,
         substrate_area_scale: float = 1.0,
         wavelength: float = 1.5406,
-        propagation_backend: str = "auto",
-        density_method: str = "sampled",
+        propagation_backend: str = "reflection",
         density_slices: int = 100,
         density_max_q0: float = 30.0,
     ) -> None:
@@ -47,7 +47,6 @@ class DynamicModel:
         self.substrate_area_scale = substrate_area_scale
         self.wavelength = wavelength
         self.propagation_backend = propagation_backend
-        self.density_method = density_method
         self.density_slices = density_slices
         self.density_max_q0 = density_max_q0
         self.q = 4.0 * np.pi / self.wavelength * sind(twotheta / 2.0)
@@ -58,7 +57,7 @@ class DynamicModel:
         self.workspace = DynamicWorkspace()
 
     def _parse_optional_params(self, params: np.ndarray) -> tuple[float, float, float, float, float, float]:
-        offset = 9
+        offset = 10
         if self.include_strain:
             bottom_amp, bottom_end, top_amp, top_end = params[offset : offset + 4]
             offset += 4
@@ -86,7 +85,7 @@ class DynamicModel:
                 n=self.substrate_n,
                 filename=self.substrate_filename,
                 dinterface=self.substrate_dinterface,
-                scale=params[8],
+                scale=params[9],
                 area_scale=self.substrate_area_scale,
             ),
             Layer(
@@ -113,10 +112,8 @@ class DynamicModel:
             vacuum_thick=5.0,
             slices=self.density_slices,
             max_q0=self.density_max_q0,
-            step_q0=0.1,
             propagation_backend=self.propagation_backend,
             workspace=self.workspace,
-            density_method=self.density_method,
         )
 
     def reflectivity(self, params: np.ndarray) -> np.ndarray:
@@ -165,10 +162,12 @@ class DynamicModel:
         return reflectivity
 
     def predict(self, params: np.ndarray) -> np.ndarray:
-        resolution, amplitude, bkg_a, bkg_b = params[4:8]
+        resolution, amplitude, bkg_a, bkg_b, bkg_c = params[4:9]
         reflectivity = self.reflectivity(params)
         broadened = gauss_conv(self.q, reflectivity, resolution)
-        return amplitude * broadened + bkg_a * self.q + bkg_b
+        return amplitude * broadened + centered_polynomial_background(
+            self.q, bkg_a, bkg_b, bkg_c
+        )
 
     def residual_vector(self, params: np.ndarray) -> np.ndarray:
         floor = max(np.min(self.observed[self.observed > 0]) * 0.1, 1e-12)
