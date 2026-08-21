@@ -5,6 +5,7 @@ import json
 import os
 import queue
 import secrets
+import tempfile
 import threading
 import tkinter as tk
 import webbrowser
@@ -575,6 +576,27 @@ def fit_update_to_dict(update: FitUpdate) -> dict[str, object]:
         "density_real": None if density is None else np.real(density).tolist(),
         "density_imag": None if density is None else np.imag(density).tolist(),
     }
+
+
+def write_json_document(path: Path, document: dict[str, object]) -> None:
+    payload = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(payload)
+        os.replace(temporary_path, path)
+    except Exception:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def fit_update_from_dict(data: dict[str, object]) -> FitUpdate:
@@ -3259,24 +3281,18 @@ class FitApp:
     def _save_stack_file(self) -> None:
         try:
             document = self._stack_document_from_controls()
-        except (TypeError, ValueError) as exc:
-            messagebox.showerror("Cannot save superlattice", str(exc))
-            return
-        selected = filedialog.asksaveasfilename(
-            title="Save GenL superlattice",
-            initialdir=str(STACK_DIR),
-            initialfile=Path(self.stack_path_var.get()).name,
-            defaultextension=".json",
-            filetypes=[("GenL superlattice", "*.json"), ("All files", "*")],
-        )
-        if not selected:
-            return
-        try:
-            with Path(selected).open("w", encoding="utf-8") as handle:
-                json.dump(document, handle, indent=2, ensure_ascii=False)
-                handle.write("\n")
-        except OSError as exc:
-            messagebox.showerror("Cannot save superlattice", str(exc))
+            selected = filedialog.asksaveasfilename(
+                title="Save GenL superlattice",
+                initialdir=str(STACK_DIR),
+                initialfile=Path(self.stack_path_var.get()).name,
+                defaultextension=".json",
+                filetypes=[("GenL superlattice", "*.json"), ("All files", "*")],
+            )
+            if not selected:
+                return
+            write_json_document(Path(selected), document)
+        except Exception as exc:  # Save callbacks must not escape into Tk.
+            self._report_save_error("Cannot save superlattice", exc)
             return
         self.stack_path_var.set(selected)
         self.stack_document = copy.deepcopy(document)
@@ -3509,29 +3525,29 @@ class FitApp:
             "results": results,
         }
 
+    def _report_save_error(self, title: str, exc: Exception) -> None:
+        self.status_var.set("Save failed; current setup and results remain available")
+        messagebox.showerror(
+            title,
+            f"{exc}\n\nThe current setup, results, and fit progress remain available in GenL.",
+        )
+
     def _save_project(self) -> None:
         try:
             document = self._project_document()
-        except (TypeError, ValueError) as exc:
-            messagebox.showerror("Cannot save setup/results", str(exc))
-            return
-
-        data_path = resolve_data_path(self.data_path_var.get())
-        selected = filedialog.asksaveasfilename(
-            title="Save GenL setup and results",
-            initialdir=str(data_path.parent if data_path.parent.exists() else ROOT),
-            initialfile=f"{data_path.stem}.genl.json",
-            defaultextension=".genl.json",
-            filetypes=[("GenL project", "*.genl.json"), ("JSON", "*.json")],
-        )
-        if not selected:
-            return
-        try:
-            with Path(selected).open("w", encoding="utf-8") as handle:
-                json.dump(document, handle, indent=2, ensure_ascii=False)
-                handle.write("\n")
-        except OSError as exc:
-            messagebox.showerror("Cannot save setup/results", str(exc))
+            data_path = resolve_data_path(self.data_path_var.get())
+            selected = filedialog.asksaveasfilename(
+                title="Save GenL setup and results",
+                initialdir=str(data_path.parent if data_path.parent.exists() else ROOT),
+                initialfile=f"{data_path.stem}.genl.json",
+                defaultextension=".genl.json",
+                filetypes=[("GenL project", "*.genl.json"), ("JSON", "*.json")],
+            )
+            if not selected:
+                return
+            write_json_document(Path(selected), document)
+        except Exception as exc:  # Save callbacks must not escape into Tk.
+            self._report_save_error("Cannot save setup/results", exc)
             return
         self.status_var.set(f"Saved setup/results: {selected}")
 
@@ -3549,30 +3565,30 @@ class FitApp:
                 "Run a dynamic simulation or fit before saving the two plots.",
             )
             return
-        data_path = resolve_data_path(self.data_path_var.get())
-        selected = filedialog.asksaveasfilename(
-            title="Save GenL plots",
-            initialdir=str(data_path.parent if data_path.parent.exists() else ROOT),
-            initialfile=f"{data_path.stem}_genl.png",
-            defaultextension=".png",
-            filetypes=[
-                ("PNG image", "*.png"),
-                ("JPEG image", "*.jpg *.jpeg"),
-                ("TIFF image", "*.tif *.tiff"),
-                ("SVG image", "*.svg"),
-                ("PDF document", "*.pdf"),
-            ],
-        )
-        if not selected:
-            return
         try:
+            data_path = resolve_data_path(self.data_path_var.get())
+            selected = filedialog.asksaveasfilename(
+                title="Save GenL plots",
+                initialdir=str(data_path.parent if data_path.parent.exists() else ROOT),
+                initialfile=f"{data_path.stem}_genl.png",
+                defaultextension=".png",
+                filetypes=[
+                    ("PNG image", "*.png"),
+                    ("JPEG image", "*.jpg *.jpeg"),
+                    ("TIFF image", "*.tif *.tiff"),
+                    ("SVG image", "*.svg"),
+                    ("PDF document", "*.pdf"),
+                ],
+            )
+            if not selected:
+                return
             written = save_result_plots(
                 self.last_update,
                 self._parse_wavelength(),
                 Path(selected),
             )
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("Cannot save plots", str(exc))
+        except Exception as exc:  # Save callbacks must not escape into Tk.
+            self._report_save_error("Cannot save plots", exc)
             return
         self.status_var.set("Saved plots: " + ", ".join(str(path) for path in written))
         messagebox.showinfo(
@@ -3585,20 +3601,20 @@ class FitApp:
         if self.last_update is None:
             messagebox.showinfo("No results", "Run a simulation or fit before exporting data.")
             return
-        data_path = resolve_data_path(self.data_path_var.get())
-        selected = filedialog.asksaveasfilename(
-            title="Export GenL graph data",
-            initialdir=str(data_path.parent if data_path.parent.exists() else ROOT),
-            initialfile=f"{data_path.stem}_genl_results.csv",
-            defaultextension=".csv",
-            filetypes=[("CSV data", "*.csv"), ("Tab-delimited text", "*.txt")],
-        )
-        if not selected:
-            return
         try:
+            data_path = resolve_data_path(self.data_path_var.get())
+            selected = filedialog.asksaveasfilename(
+                title="Export GenL graph data",
+                initialdir=str(data_path.parent if data_path.parent.exists() else ROOT),
+                initialfile=f"{data_path.stem}_genl_results.csv",
+                defaultextension=".csv",
+                filetypes=[("CSV data", "*.csv"), ("Tab-delimited text", "*.txt")],
+            )
+            if not selected:
+                return
             written = export_result_data(self.last_update, Path(selected))
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("Cannot export graph data", str(exc))
+        except Exception as exc:  # Save callbacks must not escape into Tk.
+            self._report_save_error("Cannot export graph data", exc)
             return
         self.status_var.set("Exported graph data: " + ", ".join(str(path) for path in written))
 
@@ -5557,14 +5573,9 @@ class FitApp:
                 resolved_path = ROOT / "validation" / (
                     f"{sample_slug}_gui_{model_slug}_fit_superlattice.json"
                 )
-                with resolved_path.open("w", encoding="utf-8") as handle:
-                    json.dump(
-                        definition.resolved_document(best_params),
-                        handle,
-                        indent=2,
-                        ensure_ascii=False,
-                    )
-                    handle.write("\n")
+                write_json_document(
+                    resolved_path, definition.resolved_document(best_params)
+                )
                 fitted_lines = "\n".join(
                     f"{name}: {value:.8g}"
                     for name, value in definition.overrides(best_params).items()

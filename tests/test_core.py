@@ -28,6 +28,7 @@ from genl import (
 )
 from genl.background import centered_polynomial_background
 from genl.gui import (
+    FitApp,
     FitUpdate,
     KinematicModel,
     SAMPLES,
@@ -375,6 +376,36 @@ class CoreTests(unittest.TestCase):
         np.testing.assert_allclose(restored.predicted, update.predicted)
         np.testing.assert_allclose(restored.params, update.params)
         np.testing.assert_allclose(restored.density_rho_e, update.density_rho_e)
+
+    def test_project_save_failure_keeps_existing_file_and_gui_state(self):
+        class Variable:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "result.genl.json"
+            target.write_text("existing result", encoding="utf-8")
+            app = object.__new__(FitApp)
+            app.data_path_var = Variable(str(target))
+            app.status_var = Variable("Ready")
+            app._project_document = lambda: {"not_json": object()}
+
+            with (
+                patch("genl.gui.filedialog.asksaveasfilename", return_value=str(target)),
+                patch("genl.gui.messagebox.showerror") as showerror,
+            ):
+                app._save_project()
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "existing result")
+            self.assertIn("remain available", app.status_var.get())
+            showerror.assert_called_once()
+            self.assertFalse(list(target.parent.glob(f".{target.name}.*.tmp")))
 
     def test_tooltip_schedules_and_cancels_delayed_display(self):
         class FakeWidget:

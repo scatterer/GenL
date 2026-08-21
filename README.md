@@ -166,6 +166,10 @@ parameter selection starts a new fit.
 - **Export graph data** writes diffraction data, fit, and residuals as CSV or
   tab-delimited text, plus a separate density table when available.
 
+Project and superlattice JSON files are replaced atomically. If any save or
+plot backend fails, the GUI reports the error and retains the current fit and
+progress in memory so the user can retry.
+
 Automatic fit outputs are written under `validation/`. Exported diffraction
 figures use logarithmic intensity with 2theta and q axes. The GUI also contains
 a link to the GenL article in its citation watermark.
