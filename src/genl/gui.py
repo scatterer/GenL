@@ -3286,7 +3286,7 @@ class FitApp:
                 initialdir=str(STACK_DIR),
                 initialfile=Path(self.stack_path_var.get()).name,
                 defaultextension=".json",
-                filetypes=[("GenL superlattice", "*.json"), ("All files", "*")],
+                filetypes=[("GenL superlattice", "*.json")],
             )
             if not selected:
                 return
@@ -3540,8 +3540,8 @@ class FitApp:
                 title="Save GenL setup and results",
                 initialdir=str(data_path.parent if data_path.parent.exists() else ROOT),
                 initialfile=f"{data_path.stem}.genl.json",
-                defaultextension=".genl.json",
-                filetypes=[("GenL project", "*.genl.json"), ("JSON", "*.json")],
+                defaultextension=".json",
+                filetypes=[("GenL project", "*.json")],
             )
             if not selected:
                 return
@@ -3574,8 +3574,10 @@ class FitApp:
                 defaultextension=".png",
                 filetypes=[
                     ("PNG image", "*.png"),
-                    ("JPEG image", "*.jpg *.jpeg"),
-                    ("TIFF image", "*.tif *.tiff"),
+                    ("JPEG image (.jpg)", "*.jpg"),
+                    ("JPEG image (.jpeg)", "*.jpeg"),
+                    ("TIFF image (.tif)", "*.tif"),
+                    ("TIFF image (.tiff)", "*.tiff"),
                     ("SVG image", "*.svg"),
                     ("PDF document", "*.pdf"),
                 ],
@@ -3849,7 +3851,7 @@ class FitApp:
         selected = filedialog.askopenfilename(
             title="Load GenL setup and results",
             initialdir=str(ROOT),
-            filetypes=[("GenL project", "*.genl.json"), ("JSON", "*.json"), ("All files", "*")],
+            filetypes=[("GenL project", "*.json")],
         )
         if not selected:
             return

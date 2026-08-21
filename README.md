@@ -168,7 +168,8 @@ parameter selection starts a new fit.
 
 Project and superlattice JSON files are replaced atomically. If any save or
 plot backend fails, the GUI reports the error and retains the current fit and
-progress in memory so the user can retry.
+progress in memory so the user can retry. Save dialogs use single-extension
+filters to avoid a native Tk 8.6 crash on macOS.
 
 Automatic fit outputs are written under `validation/`. Exported diffraction
 figures use logarithmic intensity with 2theta and q axes. The GUI also contains

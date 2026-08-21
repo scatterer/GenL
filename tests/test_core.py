@@ -397,11 +397,18 @@ class CoreTests(unittest.TestCase):
             app._project_document = lambda: {"not_json": object()}
 
             with (
-                patch("genl.gui.filedialog.asksaveasfilename", return_value=str(target)),
+                patch(
+                    "genl.gui.filedialog.asksaveasfilename", return_value=str(target)
+                ) as save_dialog,
                 patch("genl.gui.messagebox.showerror") as showerror,
             ):
                 app._save_project()
 
+            self.assertEqual(
+                save_dialog.call_args.kwargs["filetypes"],
+                [("GenL project", "*.json")],
+            )
+            self.assertEqual(save_dialog.call_args.kwargs["defaultextension"], ".json")
             self.assertEqual(target.read_text(encoding="utf-8"), "existing result")
             self.assertIn("remain available", app.status_var.get())
             showerror.assert_called_once()
