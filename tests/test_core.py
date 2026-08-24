@@ -30,6 +30,7 @@ from genl.background import centered_polynomial_background
 from genl.gui import (
     FitApp,
     FitUpdate,
+    GENL_LOGO_PATH,
     KinematicModel,
     SAMPLES,
     ToolTip,
@@ -59,6 +60,9 @@ FE_DATA = EXAMPLE_DATA_DIR / "Example_data_10nmFe.txt"
 
 
 class CoreTests(unittest.TestCase):
+    def test_gui_logo_is_bundled_as_png(self):
+        self.assertEqual(GENL_LOGO_PATH.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
     def test_centered_polynomial_background_uses_normalized_q(self):
         q = np.array([2.0, 3.0, 4.0])
         np.testing.assert_allclose(

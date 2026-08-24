@@ -172,8 +172,7 @@ progress in memory so the user can retry. Save dialogs use single-extension
 filters to avoid a native Tk 8.6 crash on macOS.
 
 Automatic fit outputs are written under `validation/`. Exported diffraction
-figures use logarithmic intensity with 2theta and q axes. The GUI also contains
-a link to the GenL article in its citation watermark.
+figures use logarithmic intensity with 2theta and q axes.
 
 ## Examples and validation
 
@@ -289,12 +288,14 @@ Windows users can replace `.venv/bin/python` in these commands with
 
 ## Current limitations
 
-- Substrate layer count, interface spacing, and area scale are fixed inputs;
-  substrate lattice scale can be fitted.
+- For single-film dynamic fits, substrate layer count, interface spacing, and
+  area scale are editable simulation inputs that remain constant during
+  optimization; substrate lattice scale can optionally be fitted.
 - Kinematic roughness averages intensities of discrete thickness components;
   dynamic roughness averages complex amplitudes.
 - Checkpoints are retained only for the current GUI session.
-- Superlattice strain and roughness are not yet exposed in the GUI fitter.
+- Superlattice roughness is not yet exposed in the GUI fitter. Per-layer strain
+  for repeated and capping layers can be simulated and fitted.
 
 Rollback snapshots are stored under `archive/`, including versions before
 project export, dynamic workspaces, fit checkpoints, reflection recursion, and

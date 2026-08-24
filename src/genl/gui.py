@@ -18,6 +18,7 @@ import numpy as np
 from .paths import EXAMPLE_DATA_DIR, FORM_FACTOR_DIR, REPOSITORY_ROOT, STACK_DIR, STRUCTURE_DIR
 
 ROOT = REPOSITORY_ROOT
+GENL_LOGO_PATH = ROOT / "data" / "assets" / "GenL_Logo.png"
 CU_K_ALPHA_WAVELENGTH = 1.5406
 STRAIN_KEYS = ("bottom_amplitude", "bottom_extent", "top_amplitude", "top_extent")
 STACK_STRAIN_FIELDS = (
@@ -29,28 +30,23 @@ STACK_STRAIN_FIELDS = (
 GENL_DOI_URL = "https://doi.org/10.1107/S1600576726002566"
 PROJECT_FORMAT = "GenL GUI project"
 PROJECT_VERSION = 1
-GENL_CITATION = (
-    "GenL Python version by Vassilios Kapaklis and Gunnar K. Palsson. "
-    "Please cite: J. Appl. Cryst. 59, 968-977 (2026)\n"
-    f"{GENL_DOI_URL}"
-)
 UI_COLORS = {
-    "window": "#f3f5f7",
-    "panel": "#ffffff",
-    "setup": "#7a8793",
-    "kinematic": "#4f8cc9",
-    "film": "#4f9f68",
-    "fit": "#d5972c",
-    "substrate": "#8a7bb8",
-    "strain": "#3f8f8a",
-    "roughness": "#c9677d",
-    "stack": "#6f843f",
-    "simulate": "#2f6fad",
-    "run": "#2e8540",
-    "stop": "#b83232",
-    "entry": "#ffffff",
-    "entry_disabled": "#eceff1",
-    "watermark": "#6b7280",
+    "window": "#F4F6F8",
+    "panel": "#FFFFFF",
+    "surface": "#E9EEF2",
+    "border": "#CCD4DC",
+    "text": "#1F2933",
+    "muted": "#667085",
+    "brand": "#D9272E",
+    "action": "#2563EB",
+    "action_hover": "#1D4ED8",
+    "scientific": "#0F766E",
+    "warning": "#B7791F",
+    "error": "#C62828",
+    "success": "#2E7D32",
+    "disabled": "#CBD3DB",
+    "entry": "#FFFFFF",
+    "entry_disabled": "#E9EEF2",
 }
 TOOLTIPS = {
     "scattering_model": (
@@ -160,7 +156,7 @@ cache_dir.mkdir(exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(cache_dir))
 os.environ.setdefault("XDG_CACHE_HOME", str(cache_dir / "xdg"))
 
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 from scipy.optimize import differential_evolution, least_squares, minimize
 
@@ -410,7 +406,7 @@ def save_result_plots(update: FitUpdate, wavelength: float, path: Path) -> list[
     diffraction_axis.plot(
         update.twotheta,
         update.predicted,
-        color="red",
+        color=UI_COLORS["brand"],
         linewidth=1.5,
         label=curve_label,
     )
@@ -421,8 +417,8 @@ def save_result_plots(update: FitUpdate, wavelength: float, path: Path) -> list[
             linestyle="none",
             marker="o",
             markersize=3.5,
-            markerfacecolor="#aeb5dc",
-            markeredgecolor="#6873a8",
+            markerfacecolor=UI_COLORS["text"],
+            markeredgecolor=UI_COLORS["text"],
             markeredgewidth=0.5,
             alpha=0.75,
             label="Data",
@@ -455,7 +451,7 @@ def save_result_plots(update: FitUpdate, wavelength: float, path: Path) -> list[
         density_axis.plot(
             update.density_z,
             np.real(update.density_rho_e),
-            color="red",
+            color=UI_COLORS["scientific"],
             linewidth=1.5,
         )
         density_axis.set_xlim(float(np.min(update.density_z)), float(np.max(update.density_z)))
@@ -670,8 +666,8 @@ class ToolTip:
             text=self.text,
             justify=tk.LEFT,
             wraplength=340,
-            background="#fffbe8",
-            foreground="#111827",
+            background="#FFF8E1",
+            foreground=UI_COLORS["text"],
             relief=tk.SOLID,
             borderwidth=1,
             padx=7,
@@ -1250,6 +1246,13 @@ class FitApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("GenL: Fitting Laue oscillation patterns")
+        try:
+            self.logo_image = tk.PhotoImage(file=GENL_LOGO_PATH)
+            self.logo_header_image = self.logo_image.subsample(5, 5)
+            self.logo_dialog_image = self.logo_image.subsample(2, 2)
+            self.root.iconphoto(True, self.logo_image)
+        except tk.TclError:
+            self.logo_image = self.logo_header_image = self.logo_dialog_image = None
         self.queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.running = False
         self.stop_event = threading.Event()
@@ -1481,52 +1484,127 @@ class FitApp:
         self.stack_enabled_var.trace_add("write", self._on_stack_enabled_changed)
         self.root.after(0, self._draw_experimental_preview)
         self.root.after(150, self._process_queue)
+        self.root.after(200, self._show_launch_dialog)
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self.root)
         if "clam" in style.theme_names():
             style.theme_use("clam")
         self.root.configure(background=UI_COLORS["window"])
-        style.configure(".", background=UI_COLORS["window"])
+        style.configure(".", background=UI_COLORS["window"], foreground=UI_COLORS["text"])
         style.configure("TFrame", background=UI_COLORS["window"])
         style.configure("Panel.TFrame", background=UI_COLORS["panel"])
-        style.configure("TLabelframe", background=UI_COLORS["panel"])
-        style.configure("TLabelframe.Label", background=UI_COLORS["window"])
-        style.configure("TLabel", background=UI_COLORS["panel"])
-        style.configure("Status.TLabel", background=UI_COLORS["panel"], foreground="#374151")
-        style.configure("StatusActive.TLabel", background=UI_COLORS["panel"], foreground=UI_COLORS["simulate"])
-        style.configure("StatusSuccess.TLabel", background=UI_COLORS["panel"], foreground=UI_COLORS["run"])
-        style.configure("StatusWarning.TLabel", background=UI_COLORS["panel"], foreground=UI_COLORS["fit"])
-        style.configure("StatusError.TLabel", background=UI_COLORS["panel"], foreground=UI_COLORS["stop"])
         style.configure(
-            "Watermark.TLabel",
-            background=UI_COLORS["window"],
-            foreground=UI_COLORS["watermark"],
-            font=("TkDefaultFont", 9),
+            "TLabelframe",
+            background=UI_COLORS["panel"],
+            bordercolor=UI_COLORS["border"],
+            lightcolor=UI_COLORS["border"],
+            darkcolor=UI_COLORS["border"],
         )
-        style.configure("TCheckbutton", background=UI_COLORS["panel"])
-        style.configure("TRadiobutton", background=UI_COLORS["panel"])
-        style.configure("TEntry", fieldbackground=UI_COLORS["entry"])
+        style.configure(
+            "TLabelframe.Label",
+            background=UI_COLORS["window"],
+            foreground=UI_COLORS["text"],
+        )
+        style.configure("TLabel", background=UI_COLORS["panel"], foreground=UI_COLORS["text"])
+        style.configure("Status.TLabel", background=UI_COLORS["panel"], foreground=UI_COLORS["muted"])
+        style.configure("StatusActive.TLabel", background=UI_COLORS["panel"], foreground=UI_COLORS["action"])
+        style.configure("StatusSuccess.TLabel", background=UI_COLORS["panel"], foreground=UI_COLORS["success"])
+        style.configure("StatusWarning.TLabel", background=UI_COLORS["panel"], foreground=UI_COLORS["warning"])
+        style.configure("StatusError.TLabel", background=UI_COLORS["panel"], foreground=UI_COLORS["error"])
+        style.configure(
+            "CitationLink.TLabel",
+            background=UI_COLORS["panel"],
+            foreground=UI_COLORS["action"],
+            font=("TkDefaultFont", 10, "underline"),
+        )
+        style.configure("TCheckbutton", background=UI_COLORS["panel"], foreground=UI_COLORS["text"])
+        style.configure("TRadiobutton", background=UI_COLORS["panel"], foreground=UI_COLORS["text"])
+        style.configure(
+            "TEntry",
+            fieldbackground=UI_COLORS["entry"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+            lightcolor=UI_COLORS["border"],
+            darkcolor=UI_COLORS["border"],
+        )
         style.map(
             "TEntry",
             fieldbackground=[("disabled", UI_COLORS["entry_disabled"])],
-            foreground=[("disabled", "#6b7280")],
+            foreground=[("disabled", UI_COLORS["muted"])],
+            bordercolor=[("focus", UI_COLORS["action"])],
         )
-        for name, color in (
-            ("Simulate", UI_COLORS["simulate"]),
-            ("Run", UI_COLORS["run"]),
-            ("Pause", UI_COLORS["fit"]),
-            ("Stop", UI_COLORS["stop"]),
+        style.configure(
+            "TCombobox",
+            fieldbackground=UI_COLORS["entry"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+        )
+        style.configure(
+            "TSpinbox",
+            fieldbackground=UI_COLORS["entry"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+        )
+        style.configure("TNotebook", background=UI_COLORS["window"], bordercolor=UI_COLORS["border"])
+        style.configure(
+            "TNotebook.Tab",
+            background=UI_COLORS["surface"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+            padding=(8, 4),
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", UI_COLORS["panel"]), ("active", "#DDE4EA")],
+            foreground=[("selected", UI_COLORS["brand"])],
+        )
+        style.configure(
+            "TButton",
+            background=UI_COLORS["surface"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+            lightcolor=UI_COLORS["border"],
+            darkcolor=UI_COLORS["border"],
+        )
+        style.map(
+            "TButton",
+            background=[("active", "#DDE4EA"), ("disabled", UI_COLORS["surface"])],
+            foreground=[("disabled", UI_COLORS["muted"])],
+        )
+        style.configure(
+            "Simulate.TButton",
+            background=UI_COLORS["panel"],
+            foreground=UI_COLORS["action"],
+            bordercolor=UI_COLORS["action"],
+            lightcolor=UI_COLORS["action"],
+            darkcolor=UI_COLORS["action"],
+        )
+        style.map(
+            "Simulate.TButton",
+            background=[("active", UI_COLORS["surface"]), ("disabled", UI_COLORS["panel"])],
+            foreground=[("disabled", UI_COLORS["muted"])],
+            bordercolor=[("disabled", UI_COLORS["disabled"])],
+        )
+        for name, color, hover in (
+            ("Run", UI_COLORS["action"], UI_COLORS["action_hover"]),
+            ("Pause", UI_COLORS["warning"], "#996515"),
+            ("Stop", UI_COLORS["error"], "#A91E22"),
         ):
             style.configure(f"{name}.TButton", background=color, foreground="#ffffff")
             style.map(
                 f"{name}.TButton",
-                background=[("disabled", "#c8cdd2"), ("active", color)],
-                foreground=[("disabled", "#6b7280"), ("active", "#ffffff")],
+                background=[("disabled", UI_COLORS["disabled"]), ("active", hover)],
+                foreground=[("disabled", UI_COLORS["muted"]), ("active", "#ffffff")],
             )
 
-    def _add_accent_strip(self, parent: tk.Widget, color: str) -> None:
-        strip = tk.Frame(parent, height=4, bg=color, highlightthickness=0)
+    def _add_accent_strip(self, parent: tk.Widget) -> None:
+        strip = tk.Frame(
+            parent,
+            height=2,
+            bg=UI_COLORS["border"],
+            highlightthickness=0,
+        )
         strip.place(relx=0.0, rely=0.0, relwidth=1.0)
 
     def _sync_status_style(self, *_args: object) -> None:
@@ -1557,9 +1635,22 @@ class FitApp:
         sidebar = ttk.Frame(main_pane, padding=10)
         main_pane.add(sidebar, weight=0)
 
+        brand_frame = ttk.Frame(sidebar, style="Panel.TFrame", padding=(8, 4))
+        brand_frame.pack(fill=tk.X, pady=(0, 8))
+        if self.logo_header_image is not None:
+            ttk.Label(brand_frame, image=self.logo_header_image).pack(side=tk.LEFT)
+        brand_text = ttk.Frame(brand_frame, style="Panel.TFrame")
+        brand_text.pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Label(
+            brand_text,
+            text="GenL",
+            font=("TkDefaultFont", 17, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(brand_text, text="Laue oscillation analysis").pack(anchor="w")
+
         run_frame = ttk.LabelFrame(sidebar, text="Simulation and fit setup")
         run_frame.pack(fill=tk.X)
-        self._add_accent_strip(run_frame, UI_COLORS["setup"])
+        self._add_accent_strip(run_frame)
 
         add_tooltip(ttk.Label(run_frame, text="Scattering model"), "scattering_model").grid(
             row=0, column=0, sticky="w"
@@ -1724,7 +1815,7 @@ class FitApp:
 
         self.kinematic_frame = ttk.Frame(kinematic_tabs, padding=8, style="Panel.TFrame")
         kinematic_tabs.add(self.kinematic_frame, text="Film and fit")
-        self._add_accent_strip(self.kinematic_frame, UI_COLORS["kinematic"])
+        self._add_accent_strip(self.kinematic_frame)
         ttk.Label(self.kinematic_frame, text="Fit").grid(row=0, column=1, sticky="ew")
         ttk.Label(self.kinematic_frame, text="Value").grid(row=0, column=2, sticky="ew")
         ttk.Label(self.kinematic_frame, text="Min").grid(row=0, column=3, sticky="ew")
@@ -1769,7 +1860,7 @@ class FitApp:
             kinematic_tabs, padding=8, style="Panel.TFrame"
         )
         kinematic_tabs.add(self.kinematic_substrate_frame, text="Substrate")
-        self._add_accent_strip(self.kinematic_substrate_frame, UI_COLORS["substrate"])
+        self._add_accent_strip(self.kinematic_substrate_frame)
         add_tooltip(
             ttk.Checkbutton(
                 self.kinematic_substrate_frame,
@@ -1868,7 +1959,7 @@ class FitApp:
 
         self.dynamic_film_frame = ttk.Frame(dynamic_tabs, padding=8, style="Panel.TFrame")
         dynamic_tabs.add(self.dynamic_film_frame, text="Film")
-        self._add_accent_strip(self.dynamic_film_frame, UI_COLORS["film"])
+        self._add_accent_strip(self.dynamic_film_frame)
         add_tooltip(
             ttk.Label(self.dynamic_film_frame, text="Structure file"), "structure_file"
         ).grid(row=0, column=0, sticky="w")
@@ -1928,7 +2019,7 @@ class FitApp:
 
         self.dynamic_fit_frame = ttk.Frame(dynamic_tabs, padding=8, style="Panel.TFrame")
         dynamic_tabs.add(self.dynamic_fit_frame, text="Calculation and fit")
-        self._add_accent_strip(self.dynamic_fit_frame, UI_COLORS["fit"])
+        self._add_accent_strip(self.dynamic_fit_frame)
         add_tooltip(
             ttk.Label(self.dynamic_fit_frame, text="Density slices per cell"), "density_slices"
         ).grid(
@@ -2013,7 +2104,7 @@ class FitApp:
 
         self.dynamic_substrate_frame = ttk.Frame(dynamic_tabs, padding=8, style="Panel.TFrame")
         dynamic_tabs.add(self.dynamic_substrate_frame, text="Substrate")
-        self._add_accent_strip(self.dynamic_substrate_frame, UI_COLORS["substrate"])
+        self._add_accent_strip(self.dynamic_substrate_frame)
         add_tooltip(
             ttk.Label(self.dynamic_substrate_frame, text="Structure file"), "structure_file"
         ).grid(row=0, column=0, sticky="w")
@@ -2095,7 +2186,7 @@ class FitApp:
 
         self.strain_frame = ttk.Frame(optional_tabs, padding=8, style="Panel.TFrame")
         optional_tabs.add(self.strain_frame, text="Strain")
-        self._add_accent_strip(self.strain_frame, UI_COLORS["strain"])
+        self._add_accent_strip(self.strain_frame)
         ttk.Label(self.strain_frame, text="").grid(row=0, column=0, sticky="w")
         ttk.Label(self.strain_frame, text="Fit").grid(row=0, column=1, sticky="ew")
         ttk.Label(self.strain_frame, text="Value").grid(row=0, column=2, sticky="ew")
@@ -2151,7 +2242,7 @@ class FitApp:
 
         rough_frame = ttk.Frame(optional_tabs, padding=8, style="Panel.TFrame")
         optional_tabs.add(rough_frame, text="Roughness")
-        self._add_accent_strip(rough_frame, UI_COLORS["roughness"])
+        self._add_accent_strip(rough_frame)
         ttk.Label(rough_frame, text="").grid(row=0, column=0, sticky="w")
         ttk.Label(rough_frame, text="Fit").grid(row=0, column=1, sticky="ew")
         ttk.Label(rough_frame, text="Value").grid(row=0, column=2, sticky="ew")
@@ -2192,7 +2283,7 @@ class FitApp:
 
         optimization_frame = ttk.Frame(parameter_tabs, padding=8, style="Panel.TFrame")
         parameter_tabs.add(optimization_frame, text="Optimization settings")
-        self._add_accent_strip(optimization_frame, UI_COLORS["fit"])
+        self._add_accent_strip(optimization_frame)
         optimization_controls = [
             ("Seed", self.seed_var, 0, 0, "seed"),
             ("Progress update interval", self.interval_var, 0, 2, "progress_interval"),
@@ -2257,7 +2348,7 @@ class FitApp:
             self.workspace_frame, text="Superlattice simulation and fitting"
         )
         self.stack_container.grid(row=0, column=0, sticky="nsew")
-        self._add_accent_strip(self.stack_container, UI_COLORS["stack"])
+        self._add_accent_strip(self.stack_container)
         stack_tabs = ttk.Notebook(self.stack_container)
         stack_tabs.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 4))
 
@@ -2506,7 +2597,7 @@ class FitApp:
             stack_tabs, padding=8, style="Panel.TFrame"
         )
         stack_tabs.add(stack_optimization_frame, text="Optimization settings")
-        self._add_accent_strip(stack_optimization_frame, UI_COLORS["fit"])
+        self._add_accent_strip(stack_optimization_frame)
         for label, variable, row, column, tooltip_key in optimization_controls:
             add_optimization_control(
                 stack_optimization_frame,
@@ -2546,19 +2637,19 @@ class FitApp:
 
         summary_frame = ttk.LabelFrame(sidebar, text="Fit results")
         summary_frame.pack(fill=tk.X)
-        self._add_accent_strip(summary_frame, UI_COLORS["setup"])
+        self._add_accent_strip(summary_frame)
         self.summary_text = tk.Text(
             summary_frame,
             width=48,
             height=9,
             background=UI_COLORS["panel"],
-            foreground="#111827",
-            insertbackground="#111827",
+            foreground=UI_COLORS["text"],
+            insertbackground=UI_COLORS["text"],
             relief=tk.FLAT,
             borderwidth=1,
             highlightthickness=1,
-            highlightbackground="#d1d5db",
-            highlightcolor="#9ca3af",
+            highlightbackground=UI_COLORS["border"],
+            highlightcolor=UI_COLORS["action"],
         )
         summary_scrollbar = ttk.Scrollbar(
             summary_frame,
@@ -2579,17 +2670,14 @@ class FitApp:
         self.fit_axis = self.figure.add_subplot(312)
         self.density_axis = self.figure.add_subplot(313)
         self.canvas = FigureCanvasTkAgg(self.figure, master=plot_frame)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        watermark = ttk.Label(
+        self.plot_toolbar = NavigationToolbar2Tk(
+            self.canvas,
             plot_frame,
-            text=GENL_CITATION,
-            style="Watermark.TLabel",
-            cursor="hand2",
-            anchor="center",
-            justify=tk.CENTER,
+            pack_toolbar=False,
         )
-        watermark.pack(fill=tk.X, pady=(4, 0))
-        watermark.bind("<Button-1>", lambda _event: webbrowser.open_new(GENL_DOI_URL))
+        self.plot_toolbar.update()
+        self.plot_toolbar.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 0))
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self._draw_empty_plot()
         self.kinematic_widgets = (
             self._collect_children(self.kinematic_frame)
@@ -2609,6 +2697,63 @@ class FitApp:
         self._sync_optional_controls()
         self._redraw_range_indicators()
 
+    def _open_genl_article(self, _event: tk.Event | None = None) -> None:
+        webbrowser.open_new(GENL_DOI_URL)
+
+    def _show_launch_dialog(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("About GenL")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+
+        content = ttk.Frame(dialog, style="Panel.TFrame", padding=20)
+        content.pack(fill=tk.BOTH, expand=True)
+        if self.logo_dialog_image is not None:
+            ttk.Label(content, image=self.logo_dialog_image).pack(pady=(0, 10))
+        ttk.Label(
+            content,
+            text="GenL: Fitting Laue oscillation patterns",
+            font=("TkDefaultFont", 14, "bold"),
+        ).pack()
+        ttk.Label(
+            content,
+            text=(
+                "The GenL Python version was developed by Vassilios Kapaklis "
+                "and Gunnar K. Palsson.\n\n"
+                "If GenL contributes to published work, please cite the GenL paper:\n"
+                "J. Appl. Cryst. 59, 968-977 (2026)"
+            ),
+            justify=tk.CENTER,
+            anchor="center",
+            wraplength=420,
+        ).pack(pady=(12, 4))
+        doi_label = ttk.Label(
+            content,
+            text=GENL_DOI_URL,
+            style="CitationLink.TLabel",
+            cursor="hand2",
+        )
+        doi_label.pack(pady=(0, 16))
+        doi_label.bind("<Button-1>", self._open_genl_article)
+
+        buttons = ttk.Frame(content, style="Panel.TFrame")
+        buttons.pack()
+        ttk.Button(buttons, text="Open article", command=self._open_genl_article).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        continue_button = ttk.Button(buttons, text="Continue", command=dialog.destroy)
+        continue_button.pack(side=tk.LEFT)
+
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.bind("<Return>", lambda _event: dialog.destroy())
+        dialog.update_idletasks()
+        x = max(0, (dialog.winfo_screenwidth() - dialog.winfo_reqwidth()) // 2)
+        y = max(0, (dialog.winfo_screenheight() - dialog.winfo_reqheight()) // 2)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.grab_set()
+        continue_button.focus_set()
+
     def _collect_children(self, parent: tk.Widget) -> list[tk.Widget]:
         widgets = list(parent.winfo_children())
         for child in list(widgets):
@@ -2627,7 +2772,13 @@ class FitApp:
         fit_enabled_var: tk.BooleanVar | None = None,
         column: int = 5,
     ) -> None:
-        canvas = tk.Canvas(parent, width=96, height=20, highlightthickness=0, bg="#f5f5f5")
+        canvas = tk.Canvas(
+            parent,
+            width=96,
+            height=20,
+            highlightthickness=0,
+            bg=UI_COLORS["window"],
+        )
         canvas.grid(row=row, column=column, sticky="ew", padx=(4, 0))
         indicator = RangeIndicator(name, canvas, start_var, min_var, max_var, fit_var, fit_enabled_var)
         self.range_indicators.append(indicator)
@@ -2660,15 +2811,27 @@ class FitApp:
         value = self._parse_float_var(indicator.start_var)
         fitted_value = self._parse_float_var(indicator.fit_var)
         if indicator.fit_enabled_var is not None and not indicator.fit_enabled_var.get():
-            canvas.create_text(width // 2, y, text="fixed", fill="#777777", font=("TkDefaultFont", 8))
+            canvas.create_text(
+                width // 2,
+                y,
+                text="fixed",
+                fill=UI_COLORS["muted"],
+                font=("TkDefaultFont", 8),
+            )
             return
         if lower is None or upper is None or upper <= lower:
-            canvas.create_text(width // 2, y, text="limits", fill="#777777", font=("TkDefaultFont", 8))
+            canvas.create_text(
+                width // 2,
+                y,
+                text="limits",
+                fill=UI_COLORS["muted"],
+                font=("TkDefaultFont", 8),
+            )
             return
 
-        canvas.create_line(pad, y, width - pad, y, fill="#b7b7b7", width=2)
-        canvas.create_line(pad, y - 4, pad, y + 4, fill="#777777")
-        canvas.create_line(width - pad, y - 4, width - pad, y + 4, fill="#777777")
+        canvas.create_line(pad, y, width - pad, y, fill=UI_COLORS["border"], width=2)
+        canvas.create_line(pad, y - 4, pad, y + 4, fill=UI_COLORS["muted"])
+        canvas.create_line(width - pad, y - 4, width - pad, y + 4, fill=UI_COLORS["muted"])
 
         def x_for(value: float) -> float:
             ratio = (value - lower) / (upper - lower)
@@ -2679,14 +2842,20 @@ class FitApp:
             x = x_for(value)
             ratio = (value - lower) / (upper - lower)
             if ratio <= 0.02 or ratio >= 0.98:
-                color = "#d62728"
+                color = UI_COLORS["error"]
             elif ratio <= 0.05 or ratio >= 0.95:
-                color = "#ffbf00"
+                color = UI_COLORS["warning"]
             else:
-                color = "#2ca02c" if fitted_value is not None else "#1f77b4"
+                color = UI_COLORS["success"] if fitted_value is not None else UI_COLORS["action"]
             canvas.create_oval(x - 4, y - 4, x + 4, y + 4, fill=color, outline=color)
         elif indicator.fit_var.get() == "off":
-            canvas.create_text(width // 2, y, text="off", fill="#777777", font=("TkDefaultFont", 8))
+            canvas.create_text(
+                width // 2,
+                y,
+                text="off",
+                fill=UI_COLORS["muted"],
+                font=("TkDefaultFont", 8),
+            )
 
     def _redraw_range_indicators(self) -> None:
         for indicator in self.range_indicators:
@@ -4080,16 +4249,16 @@ class FitApp:
         self.loss_axis.clear()
         self.loss_axis.set_xlabel("progress callback")
         self.loss_axis.set_ylabel("mean abs log10 error")
-        self.loss_axis.grid(True, alpha=0.25)
+        self.loss_axis.grid(True, color=UI_COLORS["border"], alpha=0.55)
         self.fit_axis.clear()
         self.fit_axis.set_xlabel(self._axis_label())
         self.fit_axis.set_ylabel("intensity (cps)")
         self.fit_axis.set_yscale("log")
-        self.fit_axis.grid(True, alpha=0.25)
+        self.fit_axis.grid(True, color=UI_COLORS["border"], alpha=0.55)
         self.density_axis.clear()
         self.density_axis.set_xlabel("z (A)")
         self.density_axis.set_ylabel("Re density")
-        self.density_axis.grid(True, alpha=0.25)
+        self.density_axis.grid(True, color=UI_COLORS["border"], alpha=0.55)
         self.canvas.draw_idle()
 
     def _draw_experimental_preview(self) -> None:
@@ -4136,7 +4305,7 @@ class FitApp:
             x_values,
             observed,
             ".",
-            color="black",
+            color=UI_COLORS["text"],
             markersize=3,
             label="data",
         )
@@ -4145,7 +4314,7 @@ class FitApp:
         self.fit_axis.set_ylabel("intensity (cps)")
         self.fit_axis.set_title(f"{data_path.name}: experimental data")
         self.fit_axis.legend(loc="best")
-        self.fit_axis.grid(True, alpha=0.25)
+        self.fit_axis.grid(True, color=UI_COLORS["border"], alpha=0.55)
 
         self.density_axis.clear()
         self.density_axis.text(
@@ -4158,7 +4327,7 @@ class FitApp:
         )
         self.density_axis.set_xlabel("z (A)")
         self.density_axis.set_ylabel("Re density")
-        self.density_axis.grid(True, alpha=0.25)
+        self.density_axis.grid(True, color=UI_COLORS["border"], alpha=0.55)
 
         self.status_var.set(
             f"Loaded {data_path.name}: showing {len(twotheta)} of {len(all_twotheta)} data points from "
@@ -5715,11 +5884,21 @@ class FitApp:
 
         self.loss_axis.clear()
         if self.history_x:
-            self.loss_axis.plot(self.history_x, self.history_y, color="tab:blue", linewidth=1.5)
+            self.loss_axis.plot(
+                self.history_x,
+                self.history_y,
+                color=UI_COLORS["action"],
+                linewidth=1.5,
+            )
         for index in range(1, len(self.history_phase)):
             if self.history_phase[index] != self.history_phase[index - 1]:
                 x = self.history_x[index]
-                self.loss_axis.axvline(x, color="0.45", linewidth=0.8, linestyle="--")
+                self.loss_axis.axvline(
+                    x,
+                    color=UI_COLORS["muted"],
+                    linewidth=0.8,
+                    linestyle="--",
+                )
                 self.loss_axis.text(
                     x,
                     0.98,
@@ -5729,25 +5908,30 @@ class FitApp:
                     va="top",
                     ha="right",
                     fontsize=8,
-                    color="0.35",
+                    color=UI_COLORS["muted"],
                 )
         self.loss_axis.set_xlabel("progress callback")
         self.loss_axis.set_ylabel("mean abs log10 error")
         self.loss_axis.set_title(
             f"{update.phase}: cost={update.cost:.5g}" if update.show_observed else update.phase.title()
         )
-        self.loss_axis.grid(True, alpha=0.25)
+        self.loss_axis.grid(True, color=UI_COLORS["border"], alpha=0.55)
 
         self.fit_axis.clear()
         x_values = self._x_values(update.twotheta, update.q, CU_K_ALPHA_WAVELENGTH)
         if update.show_observed:
             self.fit_axis.plot(
-                x_values, update.observed, ".", color="black", markersize=3, label="data"
+                x_values,
+                update.observed,
+                ".",
+                color=UI_COLORS["text"],
+                markersize=3,
+                label="data",
             )
         self.fit_axis.plot(
             x_values,
             update.predicted,
-            color="tab:red",
+            color=UI_COLORS["brand"],
             linewidth=1.4,
             label="simulation" if update.phase == "simulation" else "current fit",
         )
@@ -5755,18 +5939,23 @@ class FitApp:
         self.fit_axis.set_xlabel(self._axis_label())
         self.fit_axis.set_ylabel("intensity (cps)")
         self.fit_axis.legend(loc="best")
-        self.fit_axis.grid(True, alpha=0.25)
+        self.fit_axis.grid(True, color=UI_COLORS["border"], alpha=0.55)
 
         self.density_axis.clear()
         if update.density_z is not None and update.density_rho_e is not None:
             self.density_axis.plot(
                 update.density_z,
                 np.real(update.density_rho_e),
-                color="tab:purple",
+                color=UI_COLORS["scientific"],
                 linewidth=1.2,
                 label="Re(rho_e)",
             )
-            self.density_axis.axhline(0.0, color="black", linewidth=0.7, alpha=0.35)
+            self.density_axis.axhline(
+                0.0,
+                color=UI_COLORS["text"],
+                linewidth=0.7,
+                alpha=0.35,
+            )
             self.density_axis.legend(loc="best")
             self.density_axis.set_title("electron density profile")
         else:
@@ -5780,7 +5969,7 @@ class FitApp:
             )
         self.density_axis.set_xlabel("z (A)")
         self.density_axis.set_ylabel("Re density")
-        self.density_axis.grid(True, alpha=0.25)
+        self.density_axis.grid(True, color=UI_COLORS["border"], alpha=0.55)
         self.canvas.draw_idle()
 
 
