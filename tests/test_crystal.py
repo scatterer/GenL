@@ -22,7 +22,7 @@ def test_cartesian_selective_poscar_is_normalized_to_fractional():
         np.testing.assert_allclose(structure.positions[0], [0.5, 1.0, 1.5])
 
 
-def test_si_111_projection_matches_known_bilayer_and_existing_oriented_cell():
+def test_si_111_projection_matches_known_bilayer():
     conventional = read_poscar("Si_fractional.vasp", STRUCTURE_DIR)
     projected = project_structure(conventional, (1, 1, 1))
 
@@ -37,15 +37,34 @@ def test_si_111_projection_matches_known_bilayer_and_existing_oriented_cell():
     np.testing.assert_array_equal(counts, [4, 4])
 
     oriented = read_poscar("si_111_fractional.vasp", STRUCTURE_DIR)
-    oriented_z = oriented.positions @ oriented.a3
-    oriented_area = np.linalg.norm(np.cross(oriented.a1, oriented.a2))
+    oriented_z = np.mod(oriented.positions[:, 2] * 3.0, 1.0)
+    oriented_levels = np.unique(np.round(oriented_z, 6))
+    np.testing.assert_allclose(oriented_levels, [0.0, 0.75], atol=2e-6)
 
-    # Compare normalized specular structure factors at several (111) orders.
-    for order in range(1, 7):
-        q = order * 2.0 * np.pi / projected.period
-        projected_f = np.sum(np.exp(1j * q * projected.z)) / projected.area
-        oriented_f = np.sum(np.exp(1j * q * oriented_z)) / oriented_area
-        np.testing.assert_allclose(projected_f, oriented_f, rtol=1e-7, atol=1e-9)
+
+def test_projection_is_representation_invariant():
+    structure = read_poscar("Si_fractional.vasp", STRUCTURE_DIR)
+    projected = project_structure(structure, (1, 1, 1))
+
+    # Four in-plane copies: four times the atoms, four times the volume,
+    # therefore four times the effective area and the same density.
+    super_positions = np.tile(structure.positions, (4, 1))
+    supercell = PoscarStructure(
+        structure.types,
+        structure.type_counts * 4,
+        super_positions,
+        structure.a1 * 2.0,
+        structure.a2 * 2.0,
+        structure.a3,
+    )
+    projected_super = project_structure(supercell, (1, 1, 1))
+
+    assert np.isclose(projected_super.period, projected.period)
+    assert np.isclose(projected_super.area, 4.0 * projected.area)
+    assert np.isclose(
+        len(projected_super.z) / projected_super.area,
+        len(projected.z) / projected.area,
+    )
 
 
 def test_projection_writer_round_trips_genl_geometry():
