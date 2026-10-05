@@ -21,6 +21,7 @@ Article = "https://doi.org/10.1107/S1600576726002566"
 
 [project.scripts]
 genl-fit-gui = "genl.gui:main"
+genl-project-crystal = "genl.crystal:main"
 
 [project.optional-dependencies]
 dev = [
